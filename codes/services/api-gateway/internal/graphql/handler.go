@@ -64,6 +64,12 @@ func (h *Handler) handleGraphQL(ctx *gin.Context) {
 
 	claims := h.extractClaims(ctx.Request)
 	requestCtx := context.WithValue(ctx.Request.Context(), claimsKey{}, claims)
+	if claims != nil {
+		requestCtx = services.WithAuth(requestCtx, services.AuthMetadata{
+			UserID: claims.UserID,
+			Roles:  claims.Roles,
+		})
+	}
 
 	result := graphql.Do(graphql.Params{
 		Schema:         h.schema,
