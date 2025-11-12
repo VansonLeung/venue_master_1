@@ -57,6 +57,34 @@ curl -X POST http://localhost:8080/graphql \
 
 By default the gateway calls the HTTP versions of the user + booking services; toggle `USE_MOCK_SERVICES=true` to revert to the in-process mocks if you are iterating purely on schema work.
 
+### Booking flow (end-to-end)
+
+```bash
+# 1. Log in to fetch a JWT
+TOKEN=$(curl -s -X POST http://localhost:8081/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"member@example.com","password":"Secret123!"}' | jq -r '.accessToken')
+
+# 2. Query bookings + facility context
+curl -s -X POST http://localhost:8080/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{ "query": "{ bookings { id status facility { name available } } }" }'
+
+# 3. Create a booking (GraphQL mutation)
+curl -s -X POST http://localhost:8080/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{ "query": "mutation { createBooking(facilityId:\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\", startsAt:\"2026-01-01T14:00:00Z\", endsAt:\"2026-01-01T15:30:00Z\") { id status paymentIntent } }" }'
+```
+
+### Admin / operator helpers
+
+- Toggle facility availability (REST):  
+  `curl -X PATCH http://localhost:8083/v1/facilities/<facility-id> -H 'Content-Type: application/json' -d '{"available":false}'`
+- Same via GraphQL:  
+  `mutation { updateFacilityAvailability(id:"...", available:false) { id available } }`
+
 ## Default Credentials
 
 The user-service now provisions a development member when `DEFAULT_MEMBER_EMAIL` and `DEFAULT_MEMBER_PASSWORD` are set (see `.env.example`). Pair it with the auth-service to fetch real JWTs:

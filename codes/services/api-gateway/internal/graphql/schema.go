@@ -46,6 +46,13 @@ func (b *schemaBuilder) queryType() *graphql.Object {
 				},
 				Resolve: b.resolveBookings,
 			},
+			"booking": {
+				Type: b.bookingType(),
+				Args: graphql.FieldConfigArgument{
+					"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
+				},
+				Resolve: b.resolveBooking,
+			},
 		},
 	})
 }
@@ -69,6 +76,14 @@ func (b *schemaBuilder) mutationType() *graphql.Object {
 					"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
 				},
 				Resolve: b.resolveCancelBooking,
+			},
+			"updateFacilityAvailability": {
+				Type: b.facilityType(),
+				Args: graphql.FieldConfigArgument{
+					"id":        &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
+					"available": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.Boolean)},
+				},
+				Resolve: b.resolveUpdateFacilityAvailability,
 			},
 		},
 	})
@@ -102,6 +117,14 @@ func (b *schemaBuilder) resolveBookings(p graphql.ResolveParams) (any, error) {
 	return b.clients.Bookings.ListBookings(p.Context, userID)
 }
 
+func (b *schemaBuilder) resolveBooking(p graphql.ResolveParams) (any, error) {
+	id, _ := p.Args["id"].(string)
+	if id == "" {
+		return nil, errors.New("id is required")
+	}
+	return b.clients.Bookings.GetBooking(p.Context, id)
+}
+
 func (b *schemaBuilder) resolveCreateBooking(p graphql.ResolveParams) (any, error) {
 	claims := ClaimsFromContext(p.Context)
 	if claims == nil || claims.UserID == "" {
@@ -130,6 +153,15 @@ func (b *schemaBuilder) resolveCancelBooking(p graphql.ResolveParams) (any, erro
 		return nil, errors.New("booking id is required")
 	}
 	return b.clients.Bookings.CancelBooking(p.Context, bookingID)
+}
+
+func (b *schemaBuilder) resolveUpdateFacilityAvailability(p graphql.ResolveParams) (any, error) {
+	id, _ := p.Args["id"].(string)
+	available, _ := p.Args["available"].(bool)
+	if id == "" {
+		return nil, errors.New("facility id is required")
+	}
+	return b.clients.Bookings.UpdateFacilityAvailability(p.Context, id, available)
 }
 
 func (b *schemaBuilder) userType() *graphql.Object {
@@ -202,9 +234,19 @@ func (b *schemaBuilder) bookingType() *graphql.Object {
 				Type:    graphql.String,
 				Resolve: formatTimeField(func(b *services.Booking) time.Time { return b.EndsAt }),
 			},
-			"status":      {Type: graphql.String},
-			"amountCents": {Type: graphql.Int},
-			"currency":    {Type: graphql.String},
+			"status":        {Type: graphql.String},
+			"amountCents":   {Type: graphql.Int},
+			"currency":      {Type: graphql.String},
+			"paymentIntent": {Type: graphql.String},
+			"facility": {
+				Type: b.facilityType(),
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if booking, ok := p.Source.(*services.Booking); ok {
+						return booking.Facility, nil
+					}
+					return nil, nil
+				},
+			},
 		},
 	})
 	return b.booking
