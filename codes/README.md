@@ -69,7 +69,7 @@ TOKEN=$(curl -s -X POST http://localhost:8081/v1/auth/login \
 curl -s -X POST http://localhost:8080/graphql \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{ "query": "{ bookings { id status facility { name available } } }" }'
+  -d '{ "query": "{ bookings(limit:20, offset:0) { id status facility { name available weekdayRateCents } } }" }'
 
 # 3. Create a booking (GraphQL mutation)
 curl -s -X POST http://localhost:8080/graphql \
@@ -84,6 +84,14 @@ curl -s -X POST http://localhost:8080/graphql \
   `curl -X PATCH http://localhost:8083/v1/facilities/<facility-id> -H 'Content-Type: application/json' -d '{"available":false}'`
 - Same via GraphQL:  
   `mutation { updateFacilityAvailability(id:"...", available:false) { id available } }`
+
+### Integration Tests (CI-ready)
+
+```bash
+./scripts/test-e2e.sh
+```
+
+The script brings up the full docker-compose stack, waits for health, and runs the `test/e2e` Go tests (tag `e2e`) that perform auth → booking creation → GraphQL verification. Use this in CI to guard the happy path end-to-end.
 
 ## Default Credentials
 

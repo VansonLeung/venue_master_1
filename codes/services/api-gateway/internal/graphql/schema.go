@@ -2,6 +2,8 @@ package graphqlhandler
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/graphql-go/graphql"
@@ -35,7 +37,10 @@ func (b *schemaBuilder) queryType() *graphql.Object {
 			"facilities": {
 				Type: graphql.NewList(b.facilityType()),
 				Args: graphql.FieldConfigArgument{
-					"venueId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
+					"venueId":  &graphql.ArgumentConfig{Type: graphql.ID},
+					"available": &graphql.ArgumentConfig{Type: graphql.Boolean},
+					"limit":    &graphql.ArgumentConfig{Type: graphql.Int},
+					"offset":   &graphql.ArgumentConfig{Type: graphql.Int},
 				},
 				Resolve: b.resolveFacilities,
 			},
@@ -43,6 +48,8 @@ func (b *schemaBuilder) queryType() *graphql.Object {
 				Type: graphql.NewList(b.bookingType()),
 				Args: graphql.FieldConfigArgument{
 					"userId": &graphql.ArgumentConfig{Type: graphql.ID},
+					"limit":  &graphql.ArgumentConfig{Type: graphql.Int},
+					"offset": &graphql.ArgumentConfig{Type: graphql.Int},
 				},
 				Resolve: b.resolveBookings,
 			},
@@ -99,10 +106,25 @@ func (b *schemaBuilder) resolveMe(p graphql.ResolveParams) (any, error) {
 
 func (b *schemaBuilder) resolveFacilities(p graphql.ResolveParams) (any, error) {
 	venueID, _ := p.Args["venueId"].(string)
-	if venueID == "" {
-		return nil, errors.New("venueId is required")
+	limit, offset, err := paginationArgs(p)
+	if err != nil {
+		return nil, err
 	}
-	return b.clients.Bookings.ListFacilities(p.Context, venueID)
+	var availablePtr *bool
+	if val, ok := p.Args["available"]; ok {
+		parsed, err := boolFromArg(val)
+		if err != nil {
+			return nil, err
+		}
+		availablePtr = &parsed
+	}
+	query := services.FacilityQuery{
+		VenueID:   venueID,
+		Available: availablePtr,
+		Limit:     limit,
+		Offset:    offset,
+	}
+	return b.clients.Bookings.ListFacilities(p.Context, query)
 }
 
 func (b *schemaBuilder) resolveBookings(p graphql.ResolveParams) (any, error) {
@@ -114,7 +136,12 @@ func (b *schemaBuilder) resolveBookings(p graphql.ResolveParams) (any, error) {
 		}
 		userID = claims.UserID
 	}
-	return b.clients.Bookings.ListBookings(p.Context, userID)
+	limit, offset, err := paginationArgs(p)
+	if err != nil {
+		return nil, err
+	}
+	query := services.BookingQuery{UserID: userID, Limit: limit, Offset: offset}
+	return b.clients.Bookings.ListBookings(p.Context, query)
 }
 
 func (b *schemaBuilder) resolveBooking(p graphql.ResolveParams) (any, error) {
@@ -211,6 +238,10 @@ func (b *schemaBuilder) facilityType() *graphql.Object {
 					return nil, nil
 				},
 			},
+			"available":         {Type: graphql.Boolean},
+			"weekdayRateCents": {Type: graphql.Int},
+			"weekendRateCents": {Type: graphql.Int},
+			"currency":        {Type: graphql.String},
 		},
 	})
 	return b.facility
@@ -273,3 +304,63 @@ func parseTimeArg(value interface{}) (time.Time, error) {
 	}
 	return parsed, nil
 }
+
+func paginationArgs(p graphql.ResolveParams) (int, int, error) {
+	limit := defaultPageSize
+	offset := 0
+	if raw, ok := p.Args["limit"]; ok {
+		val, err := intFromArg(raw)
+		if err != nil || val <= 0 {
+			return 0, 0, fmt.Errorf("invalid limit")
+		}
+		limit = val
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+	if raw, ok := p.Args["offset"]; ok {
+		val, err := intFromArg(raw)
+		if err != nil || val < 0 {
+			return 0, 0, fmt.Errorf("invalid offset")
+		}
+		offset = val
+	}
+	return limit, offset, nil
+}
+
+func intFromArg(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int32:
+		return int(v), nil
+	case int64:
+		return int(v), nil
+	case float64:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("invalid number type")
+	}
+}
+
+func boolFromArg(value interface{}) (bool, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1":
+			return true, nil
+		case "false", "0":
+			return false, nil
+		default:
+			return false, fmt.Errorf("invalid boolean value")
+		}
+	default:
+		return false, fmt.Errorf("invalid boolean type")
+	}
+}
+const (
+	defaultPageSize = 20
+	maxPageSize     = 100
+)

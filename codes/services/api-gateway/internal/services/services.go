@@ -19,10 +19,12 @@ type UserService interface {
 
 // BookingService exposes facility + booking operations.
 type BookingService interface {
-	ListFacilities(ctx context.Context, venueID string) ([]*Facility, error)
-	ListBookings(ctx context.Context, userID string) ([]*Booking, error)
+	ListFacilities(ctx context.Context, query FacilityQuery) ([]*Facility, error)
+	ListBookings(ctx context.Context, query BookingQuery) ([]*Booking, error)
 	CreateBooking(ctx context.Context, input BookingInput) (*Booking, error)
 	CancelBooking(ctx context.Context, bookingID string) (*Booking, error)
+	GetBooking(ctx context.Context, bookingID string) (*Booking, error)
+	UpdateFacilityAvailability(ctx context.Context, facilityID string, available bool) (*Facility, error)
 }
 
 // User mirrors a subset of the user-service DTO.
@@ -43,18 +45,24 @@ type Facility struct {
 	Surface     string
 	OpenAt      time.Time
 	CloseAt     time.Time
+	Available   bool
+	WeekdayRate int
+	WeekendRate int
+	Currency    string
 }
 
 // Booking describes a single reservation.
 type Booking struct {
-	ID          string
-	FacilityID  string
-	UserID      string
-	StartsAt    time.Time
-	EndsAt      time.Time
-	Status      string
-	AmountCents int64
-	Currency    string
+	ID            string
+	FacilityID    string
+	UserID        string
+	StartsAt      time.Time
+	EndsAt        time.Time
+	Status        string
+	AmountCents   int64
+	Currency      string
+	PaymentIntent string
+	Facility      *Facility
 }
 
 // BookingInput is used by the createBooking mutation.
@@ -63,6 +71,21 @@ type BookingInput struct {
 	UserID     string
 	StartsAt   time.Time
 	EndsAt     time.Time
+}
+
+// FacilityQuery carries pagination/filter filters.
+type FacilityQuery struct {
+	VenueID   string
+	Available *bool
+	Limit     int
+	Offset    int
+}
+
+// BookingQuery carries pagination filters for bookings.
+type BookingQuery struct {
+	UserID string
+	Limit  int
+	Offset int
 }
 
 // NewMockClients returns deterministic in-memory implementations so the gateway can boot before real services exist.
@@ -90,7 +113,8 @@ func (m *mockUserService) Me(_ context.Context, userID string) (*User, error) {
 	}, nil
 }
 
-func (m *mockBookingService) ListFacilities(_ context.Context, venueID string) ([]*Facility, error) {
+func (m *mockBookingService) ListFacilities(_ context.Context, query FacilityQuery) ([]*Facility, error) {
+	venueID := query.VenueID
 	facilities := []*Facility{
 		{
 			ID:          "facility-1",
@@ -100,6 +124,7 @@ func (m *mockBookingService) ListFacilities(_ context.Context, venueID string) (
 			Surface:     "hardwood",
 			OpenAt:      time.Date(0, 1, 1, 6, 0, 0, 0, time.UTC),
 			CloseAt:     time.Date(0, 1, 1, 23, 0, 0, 0, time.UTC),
+			Available:   true,
 		},
 		{
 			ID:          "facility-2",
@@ -109,12 +134,14 @@ func (m *mockBookingService) ListFacilities(_ context.Context, venueID string) (
 			Surface:     "acrylic",
 			OpenAt:      time.Date(0, 1, 1, 7, 0, 0, 0, time.UTC),
 			CloseAt:     time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC),
+			Available:   true,
 		},
 	}
 	return facilities, nil
 }
 
-func (m *mockBookingService) ListBookings(_ context.Context, userID string) ([]*Booking, error) {
+func (m *mockBookingService) ListBookings(_ context.Context, query BookingQuery) ([]*Booking, error) {
+	userID := query.UserID
 	if userID == "" {
 		return nil, errors.New("user id required")
 	}
@@ -129,6 +156,14 @@ func (m *mockBookingService) ListBookings(_ context.Context, userID string) ([]*
 		Status:      "CONFIRMED",
 		AmountCents: 4500,
 		Currency:    "CAD",
+		Facility: &Facility{
+			ID:        "facility-1",
+			VenueID:   "venue-1",
+			Name:      "Center Court",
+			Available: true,
+			OpenAt:    time.Date(0, 1, 1, 6, 0, 0, 0, time.UTC),
+			CloseAt:   time.Date(0, 1, 1, 23, 0, 0, 0, time.UTC),
+		},
 	}
 
 	return []*Booking{booking}, nil
@@ -148,6 +183,12 @@ func (m *mockBookingService) CreateBooking(_ context.Context, input BookingInput
 		Status:      "PENDING_PAYMENT",
 		AmountCents: 4500,
 		Currency:    "CAD",
+		Facility: &Facility{
+			ID:        input.FacilityID,
+			VenueID:   "venue-1",
+			Name:      "Center Court",
+			Available: true,
+		},
 	}, nil
 }
 
@@ -165,5 +206,29 @@ func (m *mockBookingService) CancelBooking(_ context.Context, bookingID string) 
 		Status:      "CANCELLED",
 		AmountCents: 4500,
 		Currency:    "CAD",
+		Facility: &Facility{
+			ID:        "facility-1",
+			VenueID:   "venue-1",
+			Name:      "Center Court",
+			Available: true,
+		},
+	}, nil
+}
+
+func (m *mockBookingService) GetBooking(ctx context.Context, bookingID string) (*Booking, error) {
+	bookings, err := m.ListBookings(ctx, BookingQuery{UserID: "user-1"})
+	if err != nil || len(bookings) == 0 {
+		return nil, errors.New("booking not found")
+	}
+	bookings[0].ID = bookingID
+	return bookings[0], nil
+}
+
+func (m *mockBookingService) UpdateFacilityAvailability(_ context.Context, facilityID string, available bool) (*Facility, error) {
+	return &Facility{
+		ID:        facilityID,
+		VenueID:   "venue-1",
+		Name:      "Center Court",
+		Available: available,
 	}, nil
 }

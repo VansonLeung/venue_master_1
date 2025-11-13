@@ -41,9 +41,7 @@ func New(ctx context.Context, cfg config.DatabaseConfig) (*Store, error) {
 }
 
 // Close closes the underlying pool.
-func (s *Store) Close() {
-	s.pool.Close()
-}
+func (s *Store) Close() { s.pool.Close() }
 
 // RunMigrations executes embedded SQL migrations.
 func (s *Store) RunMigrations(ctx context.Context) error {
@@ -69,14 +67,17 @@ func (s *Store) RunMigrations(ctx context.Context) error {
 
 // Facility represents a bookable resource.
 type Facility struct {
-	ID          uuid.UUID
-	VenueID     uuid.UUID
-	Name        string
-	Description string
-	Surface     string
-	OpenAt      time.Time
-	CloseAt     time.Time
-	Available   bool
+	ID               uuid.UUID
+	VenueID          uuid.UUID
+	Name             string
+	Description      string
+	Surface          string
+	OpenAt           time.Time
+	CloseAt          time.Time
+	Available        bool
+	WeekdayRateCents int
+	WeekendRateCents int
+	Currency         string
 }
 
 // Booking aggregates booking data plus facility linkage.
@@ -93,6 +94,14 @@ type Booking struct {
 	Facility      *Facility
 }
 
+// PaymentRetry tracks pending payment retries.
+type PaymentRetry struct {
+	BookingID     uuid.UUID
+	Attempt       int
+	NextAttemptAt time.Time
+	LastError     string
+}
+
 // SeedFacility ensures there is at least one facility to book.
 func (s *Store) SeedFacility(ctx context.Context, f Facility) error {
 	_, err := s.pool.Exec(ctx, `
@@ -103,30 +112,45 @@ func (s *Store) SeedFacility(ctx context.Context, f Facility) error {
 	return err
 }
 
+// GetFacility returns a facility by ID.
+func (s *Store) GetFacility(ctx context.Context, id uuid.UUID) (*Facility, error) {
+	row := s.pool.QueryRow(ctx, `
+        SELECT id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency
+        FROM facilities WHERE id = $1
+    `, id)
+	var f Facility
+	if err := row.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.WeekdayRateCents, &f.WeekendRateCents, &f.Currency); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
 // ListFacilities fetches facilities with optional availability filter.
 func (s *Store) ListFacilities(ctx context.Context, venueID uuid.UUID, onlyAvailable *bool, limit, offset int) ([]Facility, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 100
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	query := `SELECT id, venue_id, name, description, surface, open_at, close_at, available, hourly_rate_cents, currency FROM facilities WHERE 1=1`
-	args := []any{}
-	idx := 1
-	if venueID != uuid.Nil {
-		query += fmt.Sprintf(" AND venue_id = $%d", idx)
-		args = append(args, venueID)
-		idx++
-	}
-	if onlyAvailable != nil {
-		query += fmt.Sprintf(" AND available = $%d", idx)
-		args = append(args, *onlyAvailable)
-		idx++
-	}
-	query += fmt.Sprintf(" ORDER BY name ASC LIMIT %d OFFSET %d", limit, offset)
-
-	rows, err := s.pool.Query(ctx, query, args...)
+    if limit <= 0 {
+        limit = 20
+    }
+    if limit > 100 {
+        limit = 100
+    }
+    if offset < 0 {
+        offset = 0
+    }
+    query := `SELECT id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency FROM facilities WHERE 1=1`
+    args := []any{}
+    idx := 1
+    if venueID != uuid.Nil {
+        query += fmt.Sprintf(" AND venue_id = $%d", idx)
+        args = append(args, venueID)
+        idx++
+    }
+    if onlyAvailable != nil {
+        query += fmt.Sprintf(" AND available = $%d", idx)
+        args = append(args, *onlyAvailable)
+        idx++
+    }
+    query += fmt.Sprintf(" ORDER BY name ASC LIMIT %d OFFSET %d", limit, offset)
+    rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +159,7 @@ func (s *Store) ListFacilities(ctx context.Context, venueID uuid.UUID, onlyAvail
 	var facilities []Facility
 	for rows.Next() {
 		var f Facility
-		if err := rows.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.HourlyRateCents, &f.Currency); err != nil {
+		if err := rows.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.WeekdayRateCents, &f.WeekendRateCents, &f.Currency); err != nil {
 			return nil, err
 		}
 		facilities = append(facilities, f)
@@ -147,10 +171,10 @@ func (s *Store) ListFacilities(ctx context.Context, venueID uuid.UUID, onlyAvail
 func (s *Store) UpdateFacilityAvailability(ctx context.Context, id uuid.UUID, available bool) (*Facility, error) {
 	row := s.pool.QueryRow(ctx, `
         UPDATE facilities SET available=$2, updated_at=NOW()
-        WHERE id=$1 RETURNING id, venue_id, name, description, surface, open_at, close_at, available, hourly_rate_cents, currency
+        WHERE id=$1 RETURNING id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency
     `, id, available)
 	var f Facility
-		if err := row.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.HourlyRateCents, &f.Currency); err != nil {
+	if err := row.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.WeekdayRateCents, &f.WeekendRateCents, &f.Currency); err != nil {
 		return nil, err
 	}
 	return &f, nil
@@ -159,11 +183,11 @@ func (s *Store) UpdateFacilityAvailability(ctx context.Context, id uuid.UUID, av
 // CreateFacility inserts a new facility row.
 func (s *Store) CreateFacility(ctx context.Context, f Facility) (*Facility, error) {
 	row := s.pool.QueryRow(ctx, `
-        INSERT INTO facilities (id, venue_id, name, description, surface, open_at, close_at, available, hourly_rate_cents, currency)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        RETURNING id, venue_id, name, description, surface, open_at, close_at, available, hourly_rate_cents, currency
-    `, f.ID, f.VenueID, f.Name, f.Description, f.Surface, f.OpenAt, f.CloseAt, f.Available, f.HourlyRateCents, f.Currency)
-	if err := row.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.HourlyRateCents, &f.Currency); err != nil {
+        INSERT INTO facilities (id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        RETURNING id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency
+    `, f.ID, f.VenueID, f.Name, f.Description, f.Surface, f.OpenAt, f.CloseAt, f.Available, f.WeekdayRateCents, f.WeekendRateCents, f.Currency)
+	if err := row.Scan(&f.ID, &f.VenueID, &f.Name, &f.Description, &f.Surface, &f.OpenAt, &f.CloseAt, &f.Available, &f.WeekdayRateCents, &f.WeekendRateCents, &f.Currency); err != nil {
 		return nil, err
 	}
 	return &f, nil
@@ -171,26 +195,29 @@ func (s *Store) CreateFacility(ctx context.Context, f Facility) (*Facility, erro
 
 // ListBookings returns bookings for a user (optional) with facility data.
 func (s *Store) ListBookings(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Booking, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 100
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	query := `
+    if limit <= 0 {
+        limit = 20
+    }
+    if limit > 100 {
+        limit = 100
+    }
+    if offset < 0 {
+        offset = 0
+    }
+    query := `
         SELECT b.id, b.facility_id, b.user_id, b.starts_at, b.ends_at, b.status, b.amount_cents, b.currency, b.payment_intent,
-               f.id, f.venue_id, f.name, f.description, f.surface, f.open_at, f.close_at, f.available, f.hourly_rate_cents, f.currency
+               f.id, f.venue_id, f.name, f.description, f.surface, f.open_at, f.close_at, f.available, f.weekday_rate_cents, f.weekend_rate_cents, f.currency
         FROM bookings b
         JOIN facilities f ON f.id = b.facility_id
     `
-	args := []any{}
-	if userID != uuid.Nil {
-		query += " WHERE b.user_id = $1"
-		args = append(args, userID)
-	}
-	query += fmt.Sprintf(" ORDER BY b.starts_at DESC LIMIT %d OFFSET %d", limit, offset)
+    args := []any{}
+    if userID != uuid.Nil {
+        query += " WHERE b.user_id = $1"
+        args = append(args, userID)
+    }
+    query += fmt.Sprintf(" ORDER BY b.starts_at DESC LIMIT %d OFFSET %d", limit, offset)
 
-	rows, err := s.pool.Query(ctx, query, args...)
+    rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +228,7 @@ func (s *Store) ListBookings(ctx context.Context, userID uuid.UUID, limit, offse
 		var b Booking
 		var facility Facility
 		if err := rows.Scan(&b.ID, &b.FacilityID, &b.UserID, &b.StartsAt, &b.EndsAt, &b.Status, &b.AmountCents, &b.Currency, &b.PaymentIntent,
-			&facility.ID, &facility.VenueID, &facility.Name, &facility.Description, &facility.Surface, &facility.OpenAt, &facility.CloseAt, &facility.Available, &facility.HourlyRateCents, &facility.Currency); err != nil {
+			&facility.ID, &facility.VenueID, &facility.Name, &facility.Description, &facility.Surface, &facility.OpenAt, &facility.CloseAt, &facility.Available, &facility.WeekdayRateCents, &facility.WeekendRateCents, &facility.Currency); err != nil {
 			return nil, err
 		}
 		b.Facility = &facility
@@ -249,9 +276,9 @@ func (s *Store) AttachFacility(ctx context.Context, booking *Booking) error {
 	if booking == nil {
 		return nil
 	}
-	row := s.pool.QueryRow(ctx, `SELECT id, venue_id, name, description, surface, open_at, close_at, available FROM facilities WHERE id=$1`, booking.FacilityID)
+	row := s.pool.QueryRow(ctx, `SELECT id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency FROM facilities WHERE id=$1`, booking.FacilityID)
 	var facility Facility
-	if err := row.Scan(&facility.ID, &facility.VenueID, &facility.Name, &facility.Description, &facility.Surface, &facility.OpenAt, &facility.CloseAt, &facility.Available); err != nil {
+	if err := row.Scan(&facility.ID, &facility.VenueID, &facility.Name, &facility.Description, &facility.Surface, &facility.OpenAt, &facility.CloseAt, &facility.Available, &facility.WeekdayRateCents, &facility.WeekendRateCents, &facility.Currency); err != nil {
 		return err
 	}
 	booking.Facility = &facility
@@ -290,7 +317,7 @@ func (s *Store) CancelBooking(ctx context.Context, id uuid.UUID) (*Booking, erro
 func (s *Store) GetBooking(ctx context.Context, id uuid.UUID) (*Booking, error) {
 	row := s.pool.QueryRow(ctx, `
         SELECT b.id, b.facility_id, b.user_id, b.starts_at, b.ends_at, b.status, b.amount_cents, b.currency, b.payment_intent,
-               f.id, f.venue_id, f.name, f.description, f.surface, f.open_at, f.close_at, f.available
+               f.id, f.venue_id, f.name, f.description, f.surface, f.open_at, f.close_at, f.available, f.weekday_rate_cents, f.weekend_rate_cents, f.currency
         FROM bookings b
         JOIN facilities f ON f.id = b.facility_id
         WHERE b.id = $1
@@ -298,7 +325,7 @@ func (s *Store) GetBooking(ctx context.Context, id uuid.UUID) (*Booking, error) 
 	var b Booking
 	var facility Facility
 	if err := row.Scan(&b.ID, &b.FacilityID, &b.UserID, &b.StartsAt, &b.EndsAt, &b.Status, &b.AmountCents, &b.Currency, &b.PaymentIntent,
-		&facility.ID, &facility.VenueID, &facility.Name, &facility.Description, &facility.Surface, &facility.OpenAt, &facility.CloseAt, &facility.Available); err != nil {
+		&facility.ID, &facility.VenueID, &facility.Name, &facility.Description, &facility.Surface, &facility.OpenAt, &facility.CloseAt, &facility.Available, &facility.WeekdayRateCents, &facility.WeekendRateCents, &facility.Currency); err != nil {
 		return nil, err
 	}
 	b.Facility = &facility
@@ -318,4 +345,48 @@ func (s *Store) hasConflict(ctx context.Context, facilityID uuid.UUID, start, en
 		return false, err
 	}
 	return exists, nil
+}
+
+// SchedulePaymentRetry inserts/updates a pending retry.
+func (s *Store) SchedulePaymentRetry(ctx context.Context, bookingID uuid.UUID, next time.Time, attempt int, lastErr string) error {
+	_, err := s.pool.Exec(ctx, `
+        INSERT INTO payment_retries (booking_id, attempt, next_attempt_at, last_error)
+        VALUES ($1,$2,$3,$4)
+        ON CONFLICT (booking_id) DO UPDATE SET attempt=$2, next_attempt_at=$3, last_error=$4, updated_at=NOW()
+    `, bookingID, attempt, next, lastErr)
+	return err
+}
+
+// FetchDuePaymentRetries returns retries due for processing.
+func (s *Store) FetchDuePaymentRetries(ctx context.Context, limit int) ([]PaymentRetry, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.pool.Query(ctx, `
+        SELECT booking_id, attempt, next_attempt_at, last_error
+        FROM payment_retries
+        WHERE next_attempt_at <= NOW()
+        ORDER BY next_attempt_at ASC
+        LIMIT $1
+    `, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var retries []PaymentRetry
+	for rows.Next() {
+		var pr PaymentRetry
+		if err := rows.Scan(&pr.BookingID, &pr.Attempt, &pr.NextAttemptAt, &pr.LastError); err != nil {
+			return nil, err
+		}
+		retries = append(retries, pr)
+	}
+	return retries, rows.Err()
+}
+
+// DeletePaymentRetry removes a retry row.
+func (s *Store) DeletePaymentRetry(ctx context.Context, bookingID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM payment_retries WHERE booking_id = $1`, bookingID)
+	return err
 }
