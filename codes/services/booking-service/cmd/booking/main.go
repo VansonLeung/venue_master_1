@@ -75,11 +75,20 @@ func registerRoutes(router *gin.Engine, h *handler) {
 	memberWriteRoles := []string{middleware.RoleMember, middleware.RoleAdmin, middleware.RoleVenueAdmin}
 	adminRoles := []string{middleware.RoleAdmin, middleware.RoleVenueAdmin}
 
+	// Venue routes
+	router.GET("/v1/venues", middleware.RequireRoles(readRoles...), h.listVenues)
+	router.GET("/v1/venues/:id", middleware.RequireRoles(readRoles...), h.getVenue)
+	router.POST("/v1/venues", middleware.RequireRoles(adminRoles...), h.createVenue)
+	router.PUT("/v1/venues/:id", middleware.RequireRoles(adminRoles...), h.updateVenue)
+	router.DELETE("/v1/venues/:id", middleware.RequireRoles(adminRoles...), h.deleteVenue)
+
+	// Booking routes
 	router.GET("/v1/bookings", middleware.RequireRoles(readRoles...), h.listBookings)
 	router.GET("/v1/bookings/:id", middleware.RequireRoles(readRoles...), h.getBooking)
 	router.POST("/v1/bookings", middleware.RequireRoles(memberWriteRoles...), h.createBooking)
 	router.DELETE("/v1/bookings/:id", middleware.RequireRoles(memberWriteRoles...), h.cancelBooking)
 
+	// Facility routes
 	router.GET("/v1/facilities", middleware.RequireRoles(readRoles...), h.listFacilities)
 	router.POST("/v1/facilities", middleware.RequireRoles(adminRoles...), h.createFacility)
 	router.PATCH("/v1/facilities/:id", middleware.RequireRoles(adminRoles...), h.updateFacilityAvailability)
@@ -119,6 +128,20 @@ type facilityOverrideRequest struct {
 	CloseAt        string `json:"closeAt"`
 	Reason         string `json:"reason"`
 	AppliesWeekday []int  `json:"appliesWeekdays"`
+}
+
+type venueRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+	Address     string `json:"address"`
+	City        string `json:"city"`
+	State       string `json:"state"`
+	ZipCode     string `json:"zipCode"`
+	Country     string `json:"country"`
+	Phone       string `json:"phone"`
+	Email       string `json:"email"`
+	Website     string `json:"website"`
+	Timezone    string `json:"timezone"`
 }
 
 func (h *handler) listBookings(ctx *gin.Context) {
@@ -825,6 +848,148 @@ func isWeekend(t time.Time) bool {
 	default:
 		return false
 	}
+}
+
+// === VENUE HANDLERS ===
+
+func (h *handler) listVenues(ctx *gin.Context) {
+	limit, offset, ok := paginationParams(ctx)
+	if !ok {
+		return
+	}
+
+	venues, err := h.store.ListVenues(ctx, limit, offset)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, venuesResponse(venues))
+}
+
+func (h *handler) getVenue(ctx *gin.Context) {
+	id, ok := uuidFromString(ctx, ctx.Param("id"), "id")
+	if !ok {
+		return
+	}
+
+	venue, err := h.store.GetVenue(ctx, id)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "venue not found"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, venueResponse(*venue))
+}
+
+func (h *handler) createVenue(ctx *gin.Context) {
+	var req venueRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	venue := store.Venue{
+		Name:        req.Name,
+		Description: req.Description,
+		Address:     req.Address,
+		City:        req.City,
+		State:       req.State,
+		ZipCode:     req.ZipCode,
+		Country:     req.Country,
+		Phone:       req.Phone,
+		Email:       req.Email,
+		Website:     req.Website,
+		Timezone:    req.Timezone,
+	}
+
+	created, err := h.store.CreateVenue(ctx, venue)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusCreated, venueResponse(*created))
+}
+
+func (h *handler) updateVenue(ctx *gin.Context) {
+	id, ok := uuidFromString(ctx, ctx.Param("id"), "id")
+	if !ok {
+		return
+	}
+
+	var req venueRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	venue := store.Venue{
+		Name:        req.Name,
+		Description: req.Description,
+		Address:     req.Address,
+		City:        req.City,
+		State:       req.State,
+		ZipCode:     req.ZipCode,
+		Country:     req.Country,
+		Phone:       req.Phone,
+		Email:       req.Email,
+		Website:     req.Website,
+		Timezone:    req.Timezone,
+	}
+
+	updated, err := h.store.UpdateVenue(ctx, id, venue)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, venueResponse(*updated))
+}
+
+func (h *handler) deleteVenue(ctx *gin.Context) {
+	id, ok := uuidFromString(ctx, ctx.Param("id"), "id")
+	if !ok {
+		return
+	}
+
+	if err := h.store.DeleteVenue(ctx, id); err != nil {
+		if err == pgx.ErrNoRows {
+			ctx.JSON(http.StatusNotFound, gin.H{"error": "venue not found"})
+		} else {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "venue deleted"})
+}
+
+func venueResponse(v store.Venue) gin.H {
+	return gin.H{
+		"id":          v.ID,
+		"name":        v.Name,
+		"description": v.Description,
+		"address":     v.Address,
+		"city":        v.City,
+		"state":       v.State,
+		"zipCode":     v.ZipCode,
+		"country":     v.Country,
+		"phone":       v.Phone,
+		"email":       v.Email,
+		"website":     v.Website,
+		"timezone":    v.Timezone,
+		"createdAt":   v.CreatedAt,
+		"updatedAt":   v.UpdatedAt,
+	}
+}
+
+func venuesResponse(venues []store.Venue) []gin.H {
+	result := make([]gin.H, len(venues))
+	for i, v := range venues {
+		result[i] = venueResponse(v)
+	}
+	return result
 }
 
 func getEnv(key, fallback string) string {

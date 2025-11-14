@@ -11,58 +11,58 @@ const getAuthHeaders = () => {
 }
 
 export const bookingService = {
-  // Get all bookings - uses BOOKING service directly (port 8083)
+  // Get all bookings - uses GATEWAY (port 8080) which forwards to booking service
   async getBookings(params = {}) {
-    const response = await axios.get(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings`, {
+    const response = await axios.get(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings`, {
       params,
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Get booking by ID - uses BOOKING service directly (port 8083)
+  // Get booking by ID - uses GATEWAY (port 8080) which forwards to booking service
   async getBookingById(id) {
-    const response = await axios.get(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings/${id}`, {
+    const response = await axios.get(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings/${id}`, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Create booking - uses BOOKING service directly (port 8083)
+  // Create booking - uses GATEWAY (port 8080) which forwards to booking service
   async createBooking(bookingData) {
-    const response = await axios.post(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings`, bookingData, {
+    const response = await axios.post(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings`, bookingData, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Update booking status - uses BOOKING service directly (port 8083)
+  // Update booking status - uses GATEWAY (port 8080) which forwards to booking service
   async updateBookingStatus(id, status) {
-    const response = await axios.patch(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings/${id}/status`, { status }, {
+    const response = await axios.patch(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings/${id}/status`, { status }, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Cancel booking - uses BOOKING service directly (port 8083)
+  // Cancel booking - uses GATEWAY (port 8080) which forwards to booking service
   async cancelBooking(id) {
-    const response = await axios.patch(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings/${id}/cancel`, {}, {
+    const response = await axios.patch(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings/${id}/cancel`, {}, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Confirm booking - uses BOOKING service directly (port 8083)
+  // Confirm booking - uses GATEWAY (port 8080) which forwards to booking service
   async confirmBooking(id) {
-    const response = await axios.post(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings/${id}/confirm`, {}, {
+    const response = await axios.post(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings/${id}/confirm`, {}, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Get booking statistics - uses BOOKING service directly (port 8083)
+  // Get booking statistics - uses GATEWAY (port 8080) which forwards to booking service
   async getStats(params = {}) {
-    const response = await axios.get(`${API_ENDPOINTS.BOOKING_URL}/v1/bookings/stats`, {
+    const response = await axios.get(`${API_ENDPOINTS.GATEWAY_URL}/v1/bookings/stats`, {
       params,
       headers: getAuthHeaders(),
     })

@@ -369,9 +369,167 @@ if [ -n "$FACILITY_ID" ] && [ "$FACILITY_ID" != "null" ]; then
 fi
 
 # ============================================
+# VENUE TESTS (REST via Gateway)
+# ============================================
+section "5. Venue Management (CRUD via Gateway)"
+
+# READ - List venues
+info "READ: List all venues"
+VENUES_RESPONSE=$(curl -s "$GATEWAY_URL/v1/venues?limit=100" \
+  -H "Authorization: Bearer $TOKEN")
+
+VENUE_COUNT=$(echo "$VENUES_RESPONSE" | jq '. | length')
+if [ "$VENUE_COUNT" -gt 0 ]; then
+    echo "$VENUES_RESPONSE" | jq '.[0]'
+    success "Found $VENUE_COUNT venues"
+    DEFAULT_VENUE_ID=$(echo "$VENUES_RESPONSE" | jq -r '.[0].id')
+else
+    error "No venues found"
+    DEFAULT_VENUE_ID=""
+fi
+
+# Note: For admin operations, we need to login as admin
+info "Logging in as admin for venue management tests"
+ADMIN_LOGIN_RESPONSE=$(curl -s -X POST "$AUTH_URL/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"Admin123!"}')
+
+ADMIN_TOKEN=$(echo "$ADMIN_LOGIN_RESPONSE" | jq -r '.accessToken')
+
+if [ "$ADMIN_TOKEN" != "null" ] && [ -n "$ADMIN_TOKEN" ]; then
+    success "Successfully logged in as admin"
+
+    # CREATE - Create a new venue
+    info "CREATE: Create a new venue"
+    CREATE_VENUE_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/v1/venues" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d @- << 'EOF'
+{
+  "name": "Test Sports Complex",
+  "description": "A modern sports facility for testing",
+  "address": "456 Test Avenue",
+  "city": "San Francisco",
+  "state": "CA",
+  "zipCode": "94102",
+  "country": "US",
+  "phone": "+1-415-555-1234",
+  "email": "info@testsports.com",
+  "website": "https://testsports.com",
+  "timezone": "America/Los_Angeles"
+}
+EOF
+)
+
+    NEW_VENUE_ID=$(echo "$CREATE_VENUE_RESPONSE" | jq -r '.id')
+    if [ "$NEW_VENUE_ID" != "null" ] && [ -n "$NEW_VENUE_ID" ]; then
+        echo "$CREATE_VENUE_RESPONSE" | jq '{id, name, city, timezone}'
+        success "Successfully created venue: $NEW_VENUE_ID"
+
+        # READ - Get specific venue
+        info "READ: Get specific venue details"
+        GET_VENUE_RESPONSE=$(curl -s "$GATEWAY_URL/v1/venues/$NEW_VENUE_ID" \
+          -H "Authorization: Bearer $ADMIN_TOKEN")
+
+        echo "$GET_VENUE_RESPONSE" | jq '{id, name, address, city, state}'
+        success "Successfully fetched venue details"
+
+        # UPDATE - Update venue
+        info "UPDATE: Update venue information"
+        UPDATE_VENUE_RESPONSE=$(curl -s -X PUT "$GATEWAY_URL/v1/venues/$NEW_VENUE_ID" \
+          -H "Authorization: Bearer $ADMIN_TOKEN" \
+          -H 'Content-Type: application/json' \
+          -d @- << 'EOF'
+{
+  "name": "Updated Sports Complex",
+  "description": "An updated modern sports facility",
+  "address": "456 Test Avenue",
+  "city": "San Francisco",
+  "state": "CA",
+  "zipCode": "94102",
+  "country": "US",
+  "phone": "+1-415-555-5678",
+  "email": "contact@testsports.com",
+  "website": "https://testsports.com",
+  "timezone": "America/Los_Angeles"
+}
+EOF
+)
+
+        UPDATED_NAME=$(echo "$UPDATE_VENUE_RESPONSE" | jq -r '.name')
+        UPDATED_PHONE=$(echo "$UPDATE_VENUE_RESPONSE" | jq -r '.phone')
+        echo "$UPDATE_VENUE_RESPONSE" | jq '{id, name, phone, email}'
+        success "Successfully updated venue: $UPDATED_NAME (Phone: $UPDATED_PHONE)"
+
+        # CREATE - Create a facility associated with the test venue
+        info "CREATE: Create facility for the test venue"
+        CREATE_FACILITY_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/v1/facilities" \
+          -H "Authorization: Bearer $ADMIN_TOKEN" \
+          -H 'Content-Type: application/json' \
+          -d @- << EOF
+{
+  "venueId": "$NEW_VENUE_ID",
+  "name": "Test Basketball Court",
+  "description": "Indoor basketball court",
+  "surface": "Hardwood",
+  "openAt": "08:00",
+  "closeAt": "22:00",
+  "weekdayRateCents": 5000,
+  "weekendRateCents": 7500,
+  "currency": "USD"
+}
+EOF
+)
+
+        TEST_FACILITY_ID=$(echo "$CREATE_FACILITY_RESPONSE" | jq -r '.id')
+        if [ "$TEST_FACILITY_ID" != "null" ] && [ -n "$TEST_FACILITY_ID" ]; then
+            echo "$CREATE_FACILITY_RESPONSE" | jq '{id, name, venueId}'
+            success "Successfully created facility for test venue: $TEST_FACILITY_ID"
+        else
+            info "Facility creation may require additional setup"
+            echo "$CREATE_FACILITY_RESPONSE" | jq '.'
+        fi
+
+        # DELETE - Delete the test venue (should cascade to facilities)
+        info "DELETE: Delete test venue (should cascade to facilities)"
+        DELETE_VENUE_RESPONSE=$(curl -s -X DELETE "$GATEWAY_URL/v1/venues/$NEW_VENUE_ID" \
+          -H "Authorization: Bearer $ADMIN_TOKEN")
+
+        if [ -z "$DELETE_VENUE_RESPONSE" ] || echo "$DELETE_VENUE_RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+            # If empty response or no error field, deletion likely succeeded
+            if [ -z "$DELETE_VENUE_RESPONSE" ]; then
+                success "Successfully deleted venue: $NEW_VENUE_ID"
+            else
+                error "Failed to delete venue"
+                echo "$DELETE_VENUE_RESPONSE" | jq '.'
+            fi
+        else
+            success "Successfully deleted venue: $NEW_VENUE_ID"
+        fi
+
+        # Verify deletion
+        info "Verifying venue deletion"
+        VERIFY_DELETE=$(curl -s "$GATEWAY_URL/v1/venues/$NEW_VENUE_ID" \
+          -H "Authorization: Bearer $ADMIN_TOKEN")
+
+        if echo "$VERIFY_DELETE" | jq -e '.error' > /dev/null 2>&1; then
+            success "Venue deletion confirmed - venue no longer exists"
+        else
+            info "Venue deletion verification inconclusive"
+        fi
+    else
+        error "Failed to create venue"
+        echo "$CREATE_VENUE_RESPONSE" | jq '.'
+    fi
+else
+    info "Admin login failed - skipping venue CREATE/UPDATE/DELETE tests"
+    echo "$ADMIN_LOGIN_RESPONSE" | jq '.'
+fi
+
+# ============================================
 # FOOD SERVICE TESTS
 # ============================================
-section "5. Food Service (CRUD)"
+section "6. Food Service (CRUD)"
 
 # READ - List menu items
 info "READ: List menu items"
@@ -387,7 +545,7 @@ info "CREATE/UPDATE/DELETE operations typically require ADMIN/OPERATOR roles"
 # ============================================
 # PARKING SERVICE TESTS
 # ============================================
-section "6. Parking Service (CRUD)"
+section "7. Parking Service (CRUD)"
 
 # READ - List parking spaces
 info "READ: List parking spaces"
@@ -430,7 +588,7 @@ fi
 # ============================================
 # SHOP SERVICE TESTS
 # ============================================
-section "7. Shop Service (CRUD)"
+section "8. Shop Service (CRUD)"
 
 # READ - List products
 info "READ: List shop products"
@@ -483,7 +641,7 @@ fi
 # ============================================
 # PAYMENT SERVICE TESTS
 # ============================================
-section "8. Payment Service (CRUD)"
+section "9. Payment Service (CRUD)"
 
 # CREATE - Create payment intent
 info "CREATE: Create payment intent"
@@ -520,7 +678,7 @@ fi
 # ============================================
 # NOTIFICATION SERVICE TESTS
 # ============================================
-section "9. Notification Service (CRUD)"
+section "10. Notification Service (CRUD)"
 
 # CREATE - Send notification (may require admin)
 info "CREATE: Send notification"

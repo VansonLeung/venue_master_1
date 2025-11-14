@@ -11,50 +11,50 @@ const getAuthHeaders = () => {
 }
 
 export const facilityService = {
-  // Get all facilities - uses BOOKING service directly (port 8083)
+  // Get all facilities - uses GATEWAY (port 8080) which forwards to booking service
   async getFacilities(params = {}) {
-    const response = await axios.get(`${API_ENDPOINTS.BOOKING_URL}/v1/facilities`, {
+    const response = await axios.get(`${API_ENDPOINTS.GATEWAY_URL}/v1/facilities`, {
       params,
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Get facility by ID - uses BOOKING service directly (port 8083)
+  // Get facility by ID - uses GATEWAY (port 8080) which forwards to booking service
   async getFacilityById(id) {
-    const response = await axios.get(`${API_ENDPOINTS.BOOKING_URL}/v1/facilities/${id}`, {
+    const response = await axios.get(`${API_ENDPOINTS.GATEWAY_URL}/v1/facilities/${id}`, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Create facility - uses BOOKING service directly (port 8083)
+  // Create facility - uses GATEWAY (port 8080) which forwards to booking service
   async createFacility(facilityData) {
-    const response = await axios.post(`${API_ENDPOINTS.BOOKING_URL}/v1/facilities`, facilityData, {
+    const response = await axios.post(`${API_ENDPOINTS.GATEWAY_URL}/v1/facilities`, facilityData, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Update facility - uses BOOKING service directly (port 8083)
+  // Update facility - uses GATEWAY (port 8080) which forwards to booking service
   async updateFacility(id, facilityData) {
-    const response = await axios.put(`${API_ENDPOINTS.BOOKING_URL}/v1/facilities/${id}`, facilityData, {
+    const response = await axios.put(`${API_ENDPOINTS.GATEWAY_URL}/v1/facilities/${id}`, facilityData, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Delete facility - uses BOOKING service directly (port 8083)
+  // Delete facility - uses GATEWAY (port 8080) which forwards to booking service
   async deleteFacility(id) {
-    const response = await axios.delete(`${API_ENDPOINTS.BOOKING_URL}/v1/facilities/${id}`, {
+    const response = await axios.delete(`${API_ENDPOINTS.GATEWAY_URL}/v1/facilities/${id}`, {
       headers: getAuthHeaders(),
     })
     return response.data
   },
 
-  // Get facility schedule - uses BOOKING service directly (port 8083)
+  // Get facility schedule - uses GATEWAY (port 8080) which forwards to booking service
   async getFacilitySchedule(id, params = {}) {
-    const response = await axios.get(`${API_ENDPOINTS.BOOKING_URL}/v1/facilities/${id}/schedule`, {
+    const response = await axios.get(`${API_ENDPOINTS.GATEWAY_URL}/v1/facilities/${id}/schedule`, {
       params,
       headers: getAuthHeaders(),
     })

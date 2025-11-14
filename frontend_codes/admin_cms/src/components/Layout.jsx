@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button'
 import {
   Building2,
   LayoutDashboard,
-  Building,
   Warehouse,
   Users,
   Calendar,
@@ -17,7 +16,7 @@ import { cn } from '@/lib/utils'
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
-  { icon: Building, label: 'Venues', path: '/venues' },
+  { icon: Building2, label: 'Venues', path: '/venues' },
   { icon: Warehouse, label: 'Facilities', path: '/facilities' },
   { icon: Calendar, label: 'Bookings', path: '/bookings' },
   { icon: Users, label: 'Users', path: '/users' },

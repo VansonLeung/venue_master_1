@@ -12,7 +12,11 @@
       "Bash(bash:*)",
       "Bash(tee:*)",
       "Bash(cat:*)",
-      "Bash(flutter --version:*)"
+      "Bash(flutter --version:*)",
+      "Bash(go get:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker logs:*)"
     ],
     "deny": [],
     "ask": []

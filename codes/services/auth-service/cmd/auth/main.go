@@ -20,6 +20,14 @@ type loginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type registerRequest struct {
+	Email     string `json:"email" binding:"required,email"`
+	Password  string `json:"password" binding:"required,min=8"`
+	FirstName string `json:"firstName" binding:"required"`
+	LastName  string `json:"lastName" binding:"required"`
+	Phone     string `json:"phone"`
+}
+
 type refreshRequest struct {
 	RefreshToken string `json:"refreshToken" binding:"required"`
 }
@@ -79,6 +87,45 @@ func registerRoutes(router *gin.Engine, jwtManager *jwtutil.Manager, users *user
 		}
 
 		ctx.JSON(http.StatusOK, gin.H{
+			"accessToken":  access,
+			"refreshToken": refresh,
+			"expiresIn":    int(jwtManager.AccessTTL().Seconds()),
+			"user":         user,
+		})
+	})
+
+	group.POST("/register", func(ctx *gin.Context) {
+		var req registerRequest
+		if err := ctx.ShouldBindJSON(&req); err != nil {
+			errutil.Write(ctx, http.StatusBadRequest, "invalid_request", "All fields are required", err.Error())
+			return
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(ctx.Request.Context(), 5*time.Second)
+		defer cancel()
+
+		user, err := users.Register(timeoutCtx, req.Email, req.Password, req.FirstName, req.LastName, req.Phone)
+		if err != nil {
+			if err.Error() == "email already registered" {
+				errutil.Write(ctx, http.StatusConflict, "email_exists", "Email already registered", nil)
+				return
+			}
+			errutil.Write(ctx, http.StatusBadRequest, "registration_failed", "Failed to register user", err.Error())
+			return
+		}
+
+		access, refresh, err := jwtManager.Generate(user.ID, user.Roles, nil)
+		if err != nil {
+			errutil.HandleInternal(ctx, err)
+			return
+		}
+
+		if err := sessions.Save(timeoutCtx, user.ID, refresh); err != nil {
+			errutil.HandleInternal(ctx, err)
+			return
+		}
+
+		ctx.JSON(http.StatusCreated, gin.H{
 			"accessToken":  access,
 			"refreshToken": refresh,
 			"expiresIn":    int(jwtManager.AccessTTL().Seconds()),

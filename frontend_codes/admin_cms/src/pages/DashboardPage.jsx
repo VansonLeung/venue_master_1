@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { bookingService } from '@/services/booking.service'
-import { venueService } from '@/services/venue.service'
 import { facilityService } from '@/services/facility.service'
 import { userService } from '@/services/user.service'
-import { Building, Warehouse, Calendar, Users } from 'lucide-react'
+import { Warehouse, Calendar, Users } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
 
 export default function DashboardPage() {
   const [stats, setStats] = useState({
-    venues: 0,
     facilities: 0,
     bookings: 0,
     users: 0,
@@ -23,15 +21,13 @@ export default function DashboardPage() {
 
   const fetchStats = async () => {
     try {
-      const [venues, facilities, bookings, users] = await Promise.all([
-        venueService.getVenues({ limit: 1 }),
+      const [facilities, bookings, users] = await Promise.all([
         facilityService.getFacilities({ limit: 1 }),
         bookingService.getBookings({ limit: 1 }),
         userService.getUsers({ limit: 1 }),
       ])
 
       setStats({
-        venues: venues.length || 0,
         facilities: facilities.length || 0,
         bookings: bookings.length || 0,
         users: users.length || 0,
@@ -49,13 +45,6 @@ export default function DashboardPage() {
   }
 
   const statCards = [
-    {
-      title: 'Total Venues',
-      value: stats.venues,
-      icon: Building,
-      color: 'text-blue-600',
-      bgColor: 'bg-blue-100',
-    },
     {
       title: 'Total Facilities',
       value: stats.facilities,
@@ -83,8 +72,8 @@ export default function DashboardPage() {
     return (
       <div className="space-y-6">
         <h1 className="text-3xl font-bold">Dashboard</h1>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {[1, 2, 3, 4].map((i) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[1, 2, 3].map((i) => (
             <Card key={i} className="animate-pulse">
               <CardHeader className="pb-2">
                 <div className="h-4 bg-gray-200 rounded w-24"></div>
@@ -108,7 +97,7 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {statCards.map((stat) => {
           const Icon = stat.icon
           return (

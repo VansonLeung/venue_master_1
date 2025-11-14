@@ -6,13 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
   Card,
   CardContent,
   CardDescription,
@@ -58,24 +51,34 @@ export default function FacilitiesPage() {
     weekendRateCents: '',
     currency: 'USD',
   })
-  const { toast } = useToast()
+  const { toast} = useToast()
 
   useEffect(() => {
     fetchData()
+    fetchVenues()
   }, [])
 
-  const fetchData = async () => {
+  const fetchVenues = async () => {
     try {
-      const [facilitiesData, venuesData] = await Promise.all([
-        facilityService.getFacilities({ limit: 100 }),
-        venueService.getVenues({ limit: 100 }),
-      ])
-      setFacilities(facilitiesData)
+      const venuesData = await venueService.getVenues({ limit: 100 })
       setVenues(venuesData)
     } catch (error) {
       toast({
         title: 'Error',
-        description: 'Failed to fetch data',
+        description: 'Failed to fetch venues',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const fetchData = async () => {
+    try {
+      const facilitiesData = await facilityService.getFacilities({ limit: 100 })
+      setFacilities(facilitiesData)
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to fetch facilities',
         variant: 'destructive',
       })
     } finally {
@@ -124,7 +127,7 @@ export default function FacilitiesPage() {
   const handleEdit = (facility) => {
     setEditingFacility(facility)
     setFormData({
-      venueId: facility.venueId,
+      venueId: facility.venueId || '',
       name: facility.name,
       description: facility.description,
       surface: facility.surface,
@@ -220,26 +223,22 @@ export default function FacilitiesPage() {
             <form onSubmit={handleSubmit}>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="venueId">Venue</Label>
-                  <Select
+                  <Label htmlFor="venueId">Venue *</Label>
+                  <select
+                    id="venueId"
                     name="venueId"
                     value={formData.venueId}
-                    onValueChange={(value) =>
-                      setFormData({ ...formData, venueId: value })
-                    }
+                    onChange={handleChange}
                     required
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a venue" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {venues.map((venue) => (
-                        <SelectItem key={venue.id} value={venue.id}>
-                          {venue.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <option value="">Select a venue...</option>
+                    {venues.map((venue) => (
+                      <option key={venue.id} value={venue.id}>
+                        {venue.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="name">Facility Name</Label>

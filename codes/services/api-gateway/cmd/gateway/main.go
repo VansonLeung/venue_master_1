@@ -8,6 +8,7 @@ import (
 	"time"
 
 	graphqlhandler "github.com/venue-master/platform/services/api-gateway/internal/graphql"
+	"github.com/venue-master/platform/services/api-gateway/internal/rest"
 	"github.com/venue-master/platform/services/api-gateway/internal/services"
 
 	"github.com/venue-master/platform/internal/server"
@@ -23,12 +24,16 @@ func main() {
 	jwtManager := jwtutil.NewManager(srv.Config.JWT)
 	clients := selectServiceClients()
 
-	handler, err := graphqlhandler.New(clients, jwtManager, srv.Logger)
+	// Register GraphQL handler
+	graphqlHandler, err := graphqlhandler.New(clients, jwtManager, srv.Logger)
 	if err != nil {
 		log.Fatalf("failed to init graphql handler: %v", err)
 	}
+	graphqlHandler.Register(srv.Engine)
 
-	handler.Register(srv.Engine)
+	// Register REST proxy handlers
+	restHandler := rest.New(clients, jwtManager, srv.Logger)
+	restHandler.Register(srv.Engine)
 
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server exited: %v", err)

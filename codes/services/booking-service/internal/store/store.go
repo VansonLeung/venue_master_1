@@ -67,6 +67,24 @@ func (s *Store) RunMigrations(ctx context.Context) error {
 	return nil
 }
 
+// Venue represents a location with facilities.
+type Venue struct {
+	ID          uuid.UUID
+	Name        string
+	Description string
+	Address     string
+	City        string
+	State       string
+	ZipCode     string
+	Country     string
+	Phone       string
+	Email       string
+	Website     string
+	Timezone    string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 // Facility represents a bookable resource.
 type Facility struct {
 	ID               uuid.UUID
@@ -592,4 +610,149 @@ func (s *Store) FetchDuePaymentRetries(ctx context.Context, limit int) ([]Paymen
 func (s *Store) DeletePaymentRetry(ctx context.Context, bookingID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM payment_retries WHERE booking_id = $1`, bookingID)
 	return err
+}
+
+// === VENUE CRUD OPERATIONS ===
+
+// ListVenues fetches all venues with pagination.
+func (s *Store) ListVenues(ctx context.Context, limit, offset int) ([]Venue, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, address, city, state, zip_code, country, phone, email, website, timezone, created_at, updated_at
+		FROM venues
+		ORDER BY name ASC
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var venues []Venue
+	for rows.Next() {
+		v, err := scanVenue(rows)
+		if err != nil {
+			return nil, err
+		}
+		venues = append(venues, *v)
+	}
+	return venues, rows.Err()
+}
+
+// GetVenue returns a venue by ID.
+func (s *Store) GetVenue(ctx context.Context, id uuid.UUID) (*Venue, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, name, description, address, city, state, zip_code, country, phone, email, website, timezone, created_at, updated_at
+		FROM venues
+		WHERE id = $1
+	`, id)
+
+	return scanVenue(row)
+}
+
+// CreateVenue inserts a new venue.
+func (s *Store) CreateVenue(ctx context.Context, v Venue) (*Venue, error) {
+	if v.ID == uuid.Nil {
+		v.ID = uuid.New()
+	}
+	if v.Country == "" {
+		v.Country = "US"
+	}
+	if v.Timezone == "" {
+		v.Timezone = "America/New_York"
+	}
+
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO venues (id, name, description, address, city, state, zip_code, country, phone, email, website, timezone)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, name, description, address, city, state, zip_code, country, phone, email, website, timezone, created_at, updated_at
+	`, v.ID, v.Name, v.Description, v.Address, v.City, v.State, v.ZipCode, v.Country, v.Phone, v.Email, v.Website, v.Timezone)
+
+	return scanVenue(row)
+}
+
+// UpdateVenue updates venue information.
+func (s *Store) UpdateVenue(ctx context.Context, id uuid.UUID, v Venue) (*Venue, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE venues
+		SET name = $2, description = $3, address = $4, city = $5, state = $6, zip_code = $7, country = $8, phone = $9, email = $10, website = $11, timezone = $12, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, name, description, address, city, state, zip_code, country, phone, email, website, timezone, created_at, updated_at
+	`, id, v.Name, v.Description, v.Address, v.City, v.State, v.ZipCode, v.Country, v.Phone, v.Email, v.Website, v.Timezone)
+
+	return scanVenue(row)
+}
+
+// DeleteVenue removes a venue by ID.
+func (s *Store) DeleteVenue(ctx context.Context, id uuid.UUID) error {
+	res, err := s.pool.Exec(ctx, `DELETE FROM venues WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// scanVenue scans a venue row with proper NULL handling.
+func scanVenue(row interface{ Scan(dest ...any) error }) (*Venue, error) {
+	var v Venue
+	var description, address, city, state, zipCode, phone, email, website sql.NullString
+
+	if err := row.Scan(
+		&v.ID,
+		&v.Name,
+		&description,
+		&address,
+		&city,
+		&state,
+		&zipCode,
+		&v.Country,
+		&phone,
+		&email,
+		&website,
+		&v.Timezone,
+		&v.CreatedAt,
+		&v.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	// Convert NULL values to empty strings
+	if description.Valid {
+		v.Description = description.String
+	}
+	if address.Valid {
+		v.Address = address.String
+	}
+	if city.Valid {
+		v.City = city.String
+	}
+	if state.Valid {
+		v.State = state.String
+	}
+	if zipCode.Valid {
+		v.ZipCode = zipCode.String
+	}
+	if phone.Valid {
+		v.Phone = phone.String
+	}
+	if email.Valid {
+		v.Email = email.String
+	}
+	if website.Valid {
+		v.Website = website.String
+	}
+
+	return &v, nil
 }

@@ -115,6 +115,58 @@ func registerRoutes(router *gin.Engine, repo *store.Store) {
 		}
 		ctx.JSON(http.StatusOK, userResponse(user))
 	})
+
+	group.POST("/register", func(ctx *gin.Context) {
+		var req struct {
+			Email     string `json:"email" binding:"required,email"`
+			Password  string `json:"password" binding:"required,min=8"`
+			FirstName string `json:"firstName" binding:"required"`
+			LastName  string `json:"lastName" binding:"required"`
+			Phone     string `json:"phone"`
+		}
+		if err := ctx.ShouldBindJSON(&req); err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(ctx.Request.Context(), 5*time.Second)
+		defer cancel()
+
+		// Check if email already exists
+		existingUser, err := repo.GetUserByEmail(timeoutCtx, req.Email)
+		if err == nil && existingUser != nil {
+			ctx.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
+			return
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+			return
+		}
+
+		// Hash password
+		hash, err := store.HashPassword(req.Password)
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "password hashing failed"})
+			return
+		}
+
+		// Create new user
+		user := &store.User{
+			ID:           uuid.New(),
+			Email:        req.Email,
+			FirstName:    req.FirstName,
+			LastName:     req.LastName,
+			Roles:        []string{"MEMBER"},
+			PasswordHash: hash,
+		}
+
+		if err := repo.UpsertUser(timeoutCtx, user); err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
+			return
+		}
+
+		ctx.JSON(http.StatusCreated, userResponse(user))
+	})
 }
 
 func handleGetUser(ctx *gin.Context, repo *store.Store, idParam string) {

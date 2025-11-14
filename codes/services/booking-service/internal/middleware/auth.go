@@ -49,7 +49,7 @@ func RequireAuth() gin.HandlerFunc {
 		userID := strings.TrimSpace(ctx.GetHeader("X-User-ID"))
 		rolesHeader := strings.TrimSpace(ctx.GetHeader("X-User-Roles"))
 		if userID == "" || rolesHeader == "" {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing auth headers"})
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing auth headers: X-User-ID = '" + userID + "', X-User-Roles = '" + rolesHeader + "'"})
 			return
 		}
 		roles := []string{}
