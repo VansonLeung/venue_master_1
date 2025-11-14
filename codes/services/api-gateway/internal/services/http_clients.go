@@ -195,6 +195,83 @@ func (c *bookingHTTPClient) UpdateFacilityAvailability(ctx context.Context, faci
 	return &facility, nil
 }
 
+func (c *bookingHTTPClient) CreateFacilityOverride(ctx context.Context, input FacilityOverrideInput) (*FacilityOverride, error) {
+	payload := facilityOverrideRequest{
+		StartDate:       input.StartDate.Format("2006-01-02"),
+		EndDate:         input.EndDate.Format("2006-01-02"),
+		AllDay:          input.AllDay,
+		Reason:          input.Reason,
+		AppliesWeekdays: input.Weekdays,
+	}
+	if input.OpenAt != nil {
+		payload.OpenAt = input.OpenAt.Format("15:04")
+	}
+	if input.CloseAt != nil {
+		payload.CloseAt = input.CloseAt.Format("15:04")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("%s/v1/facilities/%s/overrides", c.baseURL, input.FacilityID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	injectAuthHeaders(ctx, req)
+	var dto facilityOverrideDTO
+	if err := doJSONRequest(c.client, req, &dto); err != nil {
+		return nil, err
+	}
+	result, err := dto.asDomain()
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *bookingHTTPClient) DeleteFacilityOverride(ctx context.Context, facilityID, overrideID string) error {
+	endpoint := fmt.Sprintf("%s/v1/facilities/%s/overrides/%s", c.baseURL, facilityID, overrideID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	injectAuthHeaders(ctx, req)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("http DELETE %s failed: %d %s", req.URL.Path, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func (c *bookingHTTPClient) GetFacilitySchedule(ctx context.Context, facilityID string, from, to time.Time) ([]*FacilityScheduleDay, error) {
+	endpoint := fmt.Sprintf("%s/v1/facilities/%s/schedule?from=%s&to=%s", c.baseURL, facilityID, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	injectAuthHeaders(ctx, req)
+	var dto []facilityScheduleDTO
+	if err := doJSONRequest(c.client, req, &dto); err != nil {
+		return nil, err
+	}
+	result := make([]*FacilityScheduleDay, 0, len(dto))
+	for _, day := range dto {
+		parsed, err := day.asDomain()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
 func doJSONRequest[T any](client *http.Client, req *http.Request, dest *T) error {
 	resp, err := client.Do(req)
 	if err != nil {
@@ -304,6 +381,89 @@ type bookingCreateRequest struct {
 	UserID     string `json:"userId"`
 	StartsAt   string `json:"startsAt"`
 	EndsAt     string `json:"endsAt"`
+}
+
+type facilityOverrideRequest struct {
+	StartDate       string `json:"startDate"`
+	EndDate         string `json:"endDate"`
+	AllDay          bool   `json:"allDay"`
+	OpenAt          string `json:"openAt,omitempty"`
+	CloseAt         string `json:"closeAt,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	AppliesWeekdays []int  `json:"appliesWeekdays,omitempty"`
+}
+
+type facilityOverrideDTO struct {
+	ID              string `json:"id"`
+	FacilityID      string `json:"facilityId"`
+	StartDate       string `json:"startDate"`
+	EndDate         string `json:"endDate"`
+	AllDay          bool   `json:"allDay"`
+	OpenAt          string `json:"openAt"`
+	CloseAt         string `json:"closeAt"`
+	Reason          string `json:"reason"`
+	AppliesWeekdays []int  `json:"appliesWeekdays"`
+}
+
+type facilityScheduleDTO struct {
+	Date   string            `json:"date"`
+	Closed bool              `json:"closed"`
+	Reason string            `json:"reason"`
+	Slots  []facilitySlotDTO `json:"slots"`
+}
+
+type facilitySlotDTO struct {
+	OpenAt  string `json:"openAt"`
+	CloseAt string `json:"closeAt"`
+}
+
+func (o facilityOverrideDTO) asDomain() (*FacilityOverride, error) {
+	start, err := time.Parse("2006-01-02", o.StartDate)
+	if err != nil {
+		return nil, err
+	}
+	end, err := time.Parse("2006-01-02", o.EndDate)
+	if err != nil {
+		return nil, err
+	}
+	var openPtr, closePtr *time.Time
+	if o.OpenAt != "" {
+		parsed, err := time.Parse("15:04", o.OpenAt)
+		if err != nil {
+			return nil, err
+		}
+		openPtr = &parsed
+	}
+	if o.CloseAt != "" {
+		parsed, err := time.Parse("15:04", o.CloseAt)
+		if err != nil {
+			return nil, err
+		}
+		closePtr = &parsed
+	}
+	return &FacilityOverride{
+		ID:         o.ID,
+		FacilityID: o.FacilityID,
+		StartDate:  start,
+		EndDate:    end,
+		AllDay:     o.AllDay,
+		OpenAt:     openPtr,
+		CloseAt:    closePtr,
+		Reason:     o.Reason,
+		Weekdays:   o.AppliesWeekdays,
+	}, nil
+}
+
+func (d facilityScheduleDTO) asDomain() (*FacilityScheduleDay, error) {
+	date, err := time.Parse("2006-01-02", d.Date)
+	if err != nil {
+		return nil, err
+	}
+	slots := make([]FacilitySlot, 0, len(d.Slots))
+	for _, slot := range d.Slots {
+		slots = append(slots, FacilitySlot{OpenAt: slot.OpenAt, CloseAt: slot.CloseAt})
+	}
+	return &FacilityScheduleDay{Date: date, Closed: d.Closed, Reason: d.Reason, Slots: slots}, nil
 }
 
 func (b bookingDTO) facilityDomain() *Facility {

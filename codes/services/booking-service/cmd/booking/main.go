@@ -83,6 +83,9 @@ func registerRoutes(router *gin.Engine, h *handler) {
 	router.GET("/v1/facilities", middleware.RequireRoles(readRoles...), h.listFacilities)
 	router.POST("/v1/facilities", middleware.RequireRoles(adminRoles...), h.createFacility)
 	router.PATCH("/v1/facilities/:id", middleware.RequireRoles(adminRoles...), h.updateFacilityAvailability)
+	router.GET("/v1/facilities/:id/schedule", middleware.RequireRoles(readRoles...), h.getFacilitySchedule)
+	router.POST("/v1/facilities/:id/overrides", middleware.RequireRoles(adminRoles...), h.createFacilityOverride)
+	router.DELETE("/v1/facilities/:id/overrides/:overrideId", middleware.RequireRoles(adminRoles...), h.deleteFacilityOverride)
 }
 
 type bookingRequest struct {
@@ -106,6 +109,16 @@ type facilityRequest struct {
 
 type availabilityRequest struct {
 	Available bool `json:"available"`
+}
+
+type facilityOverrideRequest struct {
+	StartDate      string `json:"startDate" binding:"required"`
+	EndDate        string `json:"endDate" binding:"required"`
+	AllDay         bool   `json:"allDay"`
+	OpenAt         string `json:"openAt"`
+	CloseAt        string `json:"closeAt"`
+	Reason         string `json:"reason"`
+	AppliesWeekday []int  `json:"appliesWeekdays"`
 }
 
 func (h *handler) listBookings(ctx *gin.Context) {
@@ -399,6 +412,125 @@ func (h *handler) updateFacilityAvailability(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, facilityResponse(*facility))
 }
 
+func (h *handler) getFacilitySchedule(ctx *gin.Context) {
+	facilityID, ok := uuidFromString(ctx, ctx.Param("id"), "facility id")
+	if !ok {
+		return
+	}
+	fromStr := ctx.Query("from")
+	toStr := ctx.Query("to")
+	if fromStr == "" || toStr == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "from and to are required"})
+		return
+	}
+	fromDate, err := parseDate(fromStr)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid from"})
+		return
+	}
+	toDate, err := parseDate(toStr)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid to"})
+		return
+	}
+	schedule, err := h.store.GetFacilitySchedule(ctx, facilityID, fromDate, toDate)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, facilityScheduleResponse(schedule))
+}
+
+func (h *handler) createFacilityOverride(ctx *gin.Context) {
+	facilityID, ok := uuidFromString(ctx, ctx.Param("id"), "facility id")
+	if !ok {
+		return
+	}
+	var req facilityOverrideRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	startDate, err := parseDate(req.StartDate)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid startDate"})
+		return
+	}
+	endDate, err := parseDate(req.EndDate)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid endDate"})
+		return
+	}
+	if endDate.Before(startDate) {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "endDate before startDate"})
+		return
+	}
+	var openAtPtr, closeAtPtr *time.Time
+	if !req.AllDay {
+		if req.OpenAt == "" || req.CloseAt == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "openAt and closeAt required unless allDay"})
+			return
+		}
+		openAt, err := time.Parse("15:04", req.OpenAt)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid openAt"})
+			return
+		}
+		closeAt, err := time.Parse("15:04", req.CloseAt)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid closeAt"})
+			return
+		}
+		openAtPtr = &openAt
+		closeAtPtr = &closeAt
+	}
+	weekdays := req.AppliesWeekday
+	if len(weekdays) == 0 {
+		weekdays = []int{0, 1, 2, 3, 4, 5, 6}
+	}
+	for _, w := range weekdays {
+		if w < 0 || w > 6 {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "weekday out of range"})
+			return
+		}
+	}
+	override := &store.FacilityOverride{
+		FacilityID:     facilityID,
+		StartDate:      startDate,
+		EndDate:        endDate,
+		OpenAt:         openAtPtr,
+		CloseAt:        closeAtPtr,
+		AllDay:         req.AllDay,
+		Reason:         req.Reason,
+		AppliesWeekday: weekdays,
+	}
+	created, err := h.store.CreateFacilityOverride(ctx, override)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, facilityOverrideResponse(*created))
+}
+
+func (h *handler) deleteFacilityOverride(ctx *gin.Context) {
+	if _, ok := uuidFromString(ctx, ctx.Param("id"), "facility id"); !ok {
+		return
+	}
+	overrideID, ok := uuidFromString(ctx, ctx.Param("overrideId"), "override id")
+	if !ok {
+		return
+	}
+	if err := h.store.DeleteFacilityOverride(ctx, overrideID); err != nil {
+		if err == pgx.ErrNoRows {
+			ctx.JSON(http.StatusNotFound, gin.H{"error": "override not found"})
+			return
+		}
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
 func seedDefaultFacility(ctx context.Context, repo *store.Store, logger zerolog.Logger) error {
 	venueID := uuid.MustParse(defaultVenueID)
 	facilityID := uuid.MustParse(defaultFacility)
@@ -495,6 +627,43 @@ func facilitiesResponse(items []store.Facility) []gin.H {
 	return out
 }
 
+func facilityScheduleResponse(days []store.FacilityScheduleDay) []gin.H {
+	result := make([]gin.H, 0, len(days))
+	for _, day := range days {
+		entry := gin.H{
+			"date":   day.Date.Format("2006-01-02"),
+			"closed": day.Closed,
+			"reason": day.Reason,
+		}
+		slots := make([]gin.H, 0, len(day.Slots))
+		for _, slot := range day.Slots {
+			slots = append(slots, gin.H{"openAt": slot.OpenAt, "closeAt": slot.CloseAt})
+		}
+		entry["slots"] = slots
+		result = append(result, entry)
+	}
+	return result
+}
+
+func facilityOverrideResponse(o store.FacilityOverride) gin.H {
+	resp := gin.H{
+		"id":              o.ID,
+		"facilityId":      o.FacilityID,
+		"startDate":       o.StartDate.Format("2006-01-02"),
+		"endDate":         o.EndDate.Format("2006-01-02"),
+		"allDay":          o.AllDay,
+		"reason":          o.Reason,
+		"appliesWeekdays": o.AppliesWeekday,
+	}
+	if o.OpenAt != nil {
+		resp["openAt"] = o.OpenAt.Format("15:04")
+	}
+	if o.CloseAt != nil {
+		resp["closeAt"] = o.CloseAt.Format("15:04")
+	}
+	return resp
+}
+
 func uuidFromString(ctx *gin.Context, value, field string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(value)
 	if err != nil {
@@ -531,6 +700,10 @@ func paginationParams(ctx *gin.Context) (int, int, bool) {
 		offset = parsed
 	}
 	return limit, offset, true
+}
+
+func parseDate(value string) (time.Time, error) {
+	return time.Parse("2006-01-02", value)
 }
 
 func (h *handler) schedulePaymentRetry(ctx context.Context, bookingID uuid.UUID, cause error) {

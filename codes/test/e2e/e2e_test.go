@@ -10,8 +10,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/venue-master/platform/lib/config"
+	"github.com/venue-master/platform/lib/jwtutil"
 )
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -27,6 +31,14 @@ func TestAuthBookingFlow(t *testing.T) {
 	if len(resp.Errors) > 0 {
 		t.Fatalf("me query errors: %+v", resp.Errors)
 	}
+	var me struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	decodeData(t, resp.Data, "me", &me)
+	if me.ID == "" || me.Email == "" {
+		t.Fatalf("me payload missing fields: %+v", me)
+	}
 
 	facilityID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 	start := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Minute)
@@ -40,8 +52,91 @@ func TestAuthBookingFlow(t *testing.T) {
 	if len(resp.Errors) > 0 {
 		t.Fatalf("createBooking errors: %+v", resp.Errors)
 	}
-	if _, ok := resp.Data["createBooking"]; !ok {
-		t.Fatalf("createBooking missing data")
+	var createdBooking struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	decodeData(t, resp.Data, "createBooking", &createdBooking)
+	if createdBooking.ID == "" {
+		t.Fatalf("createBooking missing id")
+	}
+
+	adminToken := generateAdminToken(t)
+	overrideDate := time.Now().Add(48 * time.Hour).UTC()
+	overrideStart := overrideDate.Format("2006-01-02")
+	overrideWeekday := int(overrideDate.Weekday())
+	overrideMutation := fmt.Sprintf(`mutation {
+      createFacilityOverride(input:{
+        facilityId:"%s",
+        startDate:"%s",
+        endDate:"%s",
+        allDay:false,
+        openAt:"12:00",
+        closeAt:"18:00",
+        appliesWeekdays:[%d],
+        reason:"e2e"
+      }) { id facilityId startDate }
+    }`, facilityID, overrideStart, overrideStart, overrideWeekday)
+	overrideResp := callGraphQL(t, cfg.GatewayURL, adminToken, overrideMutation)
+	if len(overrideResp.Errors) > 0 {
+		t.Fatalf("createFacilityOverride errors: %+v", overrideResp.Errors)
+	}
+	var override struct {
+		ID         string `json:"id"`
+		FacilityID string `json:"facilityId"`
+	}
+	decodeData(t, overrideResp.Data, "createFacilityOverride", &override)
+	if override.ID == "" || override.FacilityID != facilityID {
+		t.Fatalf("override payload invalid: %+v", override)
+	}
+
+	t.Cleanup(func() {
+		if override.ID == "" {
+			return
+		}
+		removeMutation := fmt.Sprintf(`mutation { removeFacilityOverride(facilityId:"%s", id:"%s") }`, facilityID, override.ID)
+		resp := callGraphQL(t, cfg.GatewayURL, adminToken, removeMutation)
+		if len(resp.Errors) > 0 {
+			t.Logf("cleanup override failed: %+v", resp.Errors)
+		}
+	})
+
+	scheduleQuery := fmt.Sprintf(`{
+      facilitySchedule(facilityId:"%s", from:"%s", to:"%s") {
+        date
+        closed
+        slots { openAt closeAt }
+      }
+    }`, facilityID, overrideStart, overrideStart)
+	scheduleResp := callGraphQL(t, cfg.GatewayURL, token, scheduleQuery)
+	if len(scheduleResp.Errors) > 0 {
+		t.Fatalf("facilitySchedule errors: %+v", scheduleResp.Errors)
+	}
+	var schedule []struct {
+		Date  string `json:"date"`
+		Slots []struct {
+			OpenAt  string `json:"openAt"`
+			CloseAt string `json:"closeAt"`
+		} `json:"slots"`
+	}
+	decodeData(t, scheduleResp.Data, "facilitySchedule", &schedule)
+	if len(schedule) == 0 || len(schedule[0].Slots) == 0 {
+		t.Fatalf("schedule missing slots: %+v", schedule)
+	}
+	slot := schedule[0].Slots[0]
+	if slot.OpenAt != "12:00" || slot.CloseAt != "18:00" {
+		t.Fatalf("schedule slot mismatch: %+v", slot)
+	}
+
+	removeMutation := fmt.Sprintf(`mutation { removeFacilityOverride(facilityId:"%s", id:"%s") }`, facilityID, override.ID)
+	removeResp := callGraphQL(t, cfg.GatewayURL, adminToken, removeMutation)
+	if len(removeResp.Errors) > 0 {
+		t.Fatalf("removeFacilityOverride errors: %+v", removeResp.Errors)
+	}
+	var removed bool
+	decodeData(t, removeResp.Data, "removeFacilityOverride", &removed)
+	if !removed {
+		t.Fatalf("removeFacilityOverride returned false")
 	}
 }
 
@@ -124,7 +219,9 @@ func callGraphQL(t *testing.T, gateway, token, query string) graphQLResponse {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		t.Fatalf("graphql request: %v", err)
@@ -139,4 +236,48 @@ func callGraphQL(t *testing.T, gateway, token, query string) graphQLResponse {
 		t.Fatalf("decode graphql: %v", err)
 	}
 	return parsed
+}
+
+func decodeData[T any](t *testing.T, data map[string]json.RawMessage, key string, dest *T) {
+	t.Helper()
+	raw, ok := data[key]
+	if !ok {
+		t.Fatalf("graphql field %s missing", key)
+	}
+	if err := json.Unmarshal(raw, dest); err != nil {
+		t.Fatalf("decode %s: %v", key, err)
+	}
+}
+
+func generateAdminToken(t *testing.T) string {
+	t.Helper()
+	cfg := jwtConfigFromEnv()
+	manager := jwtutil.NewManager(cfg)
+	access, _, err := manager.Generate("11111111-2222-3333-4444-555555555555", []string{"ADMIN", "VENUE_ADMIN"}, nil)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+	return access
+}
+
+func jwtConfigFromEnv() config.JWTConfig {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "change-this-in-production"
+	}
+	issuer := os.Getenv("JWT_ISSUER")
+	if issuer == "" {
+		issuer = "venue-master"
+	}
+	audience := os.Getenv("JWT_AUDIENCE")
+	if audience == "" {
+		audience = "venue-master-clients"
+	}
+	return config.JWTConfig{
+		Secret:        secret,
+		Issuer:        issuer,
+		Audience:      audience,
+		AccessExpiry:  time.Hour,
+		RefreshExpiry: 24 * time.Hour,
+	}
 }

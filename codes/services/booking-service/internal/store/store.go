@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/venue-master/platform/lib/config"
@@ -90,8 +92,35 @@ type Booking struct {
 	Status        string
 	AmountCents   int
 	Currency      string
-	PaymentIntent string
+	PaymentIntent *string // nullable in database
 	Facility      *Facility
+}
+
+// FacilityOverride describes temporary overrides or blackouts.
+type FacilityOverride struct {
+	ID             uuid.UUID
+	FacilityID     uuid.UUID
+	StartDate      time.Time
+	EndDate        time.Time
+	OpenAt         *time.Time
+	CloseAt        *time.Time
+	AllDay         bool
+	Reason         string
+	AppliesWeekday []int
+}
+
+// FacilityScheduleDay represents merged schedule output.
+type FacilityScheduleDay struct {
+	Date   time.Time
+	Closed bool
+	Reason string
+	Slots  []FacilitySlot
+}
+
+// FacilitySlot represents an available window.
+type FacilitySlot struct {
+	OpenAt  string
+	CloseAt string
 }
 
 // PaymentRetry tracks pending payment retries.
@@ -127,30 +156,30 @@ func (s *Store) GetFacility(ctx context.Context, id uuid.UUID) (*Facility, error
 
 // ListFacilities fetches facilities with optional availability filter.
 func (s *Store) ListFacilities(ctx context.Context, venueID uuid.UUID, onlyAvailable *bool, limit, offset int) ([]Facility, error) {
-    if limit <= 0 {
-        limit = 20
-    }
-    if limit > 100 {
-        limit = 100
-    }
-    if offset < 0 {
-        offset = 0
-    }
-    query := `SELECT id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency FROM facilities WHERE 1=1`
-    args := []any{}
-    idx := 1
-    if venueID != uuid.Nil {
-        query += fmt.Sprintf(" AND venue_id = $%d", idx)
-        args = append(args, venueID)
-        idx++
-    }
-    if onlyAvailable != nil {
-        query += fmt.Sprintf(" AND available = $%d", idx)
-        args = append(args, *onlyAvailable)
-        idx++
-    }
-    query += fmt.Sprintf(" ORDER BY name ASC LIMIT %d OFFSET %d", limit, offset)
-    rows, err := s.pool.Query(ctx, query, args...)
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `SELECT id, venue_id, name, description, surface, open_at, close_at, available, weekday_rate_cents, weekend_rate_cents, currency FROM facilities WHERE 1=1`
+	args := []any{}
+	idx := 1
+	if venueID != uuid.Nil {
+		query += fmt.Sprintf(" AND venue_id = $%d", idx)
+		args = append(args, venueID)
+		idx++
+	}
+	if onlyAvailable != nil {
+		query += fmt.Sprintf(" AND available = $%d", idx)
+		args = append(args, *onlyAvailable)
+		idx++
+	}
+	query += fmt.Sprintf(" ORDER BY name ASC LIMIT %d OFFSET %d", limit, offset)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -195,29 +224,29 @@ func (s *Store) CreateFacility(ctx context.Context, f Facility) (*Facility, erro
 
 // ListBookings returns bookings for a user (optional) with facility data.
 func (s *Store) ListBookings(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Booking, error) {
-    if limit <= 0 {
-        limit = 20
-    }
-    if limit > 100 {
-        limit = 100
-    }
-    if offset < 0 {
-        offset = 0
-    }
-    query := `
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
         SELECT b.id, b.facility_id, b.user_id, b.starts_at, b.ends_at, b.status, b.amount_cents, b.currency, b.payment_intent,
                f.id, f.venue_id, f.name, f.description, f.surface, f.open_at, f.close_at, f.available, f.weekday_rate_cents, f.weekend_rate_cents, f.currency
         FROM bookings b
         JOIN facilities f ON f.id = b.facility_id
     `
-    args := []any{}
-    if userID != uuid.Nil {
-        query += " WHERE b.user_id = $1"
-        args = append(args, userID)
-    }
-    query += fmt.Sprintf(" ORDER BY b.starts_at DESC LIMIT %d OFFSET %d", limit, offset)
+	args := []any{}
+	if userID != uuid.Nil {
+		query += " WHERE b.user_id = $1"
+		args = append(args, userID)
+	}
+	query += fmt.Sprintf(" ORDER BY b.starts_at DESC LIMIT %d OFFSET %d", limit, offset)
 
-    rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -345,6 +374,180 @@ func (s *Store) hasConflict(ctx context.Context, facilityID uuid.UUID, start, en
 		return false, err
 	}
 	return exists, nil
+}
+
+// CreateFacilityOverride inserts a new override entry.
+func (s *Store) CreateFacilityOverride(ctx context.Context, override *FacilityOverride) (*FacilityOverride, error) {
+	if override.ID == uuid.Nil {
+		override.ID = uuid.New()
+	}
+	row := s.pool.QueryRow(ctx, `
+	    INSERT INTO facility_overrides (id, facility_id, start_date, end_date, open_at, close_at, all_day, reason, applies_weekdays)
+	    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	    RETURNING id, facility_id, start_date, end_date, open_at, close_at, all_day, reason, applies_weekdays
+	`, override.ID, override.FacilityID, override.StartDate, override.EndDate, nullableTime(override.OpenAt), nullableTime(override.CloseAt), override.AllDay, override.Reason, intSliceToArray(override.AppliesWeekday))
+	return scanOverride(row)
+}
+
+// DeleteFacilityOverride removes an override by ID.
+func (s *Store) DeleteFacilityOverride(ctx context.Context, id uuid.UUID) error {
+	res, err := s.pool.Exec(ctx, `DELETE FROM facility_overrides WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// ListFacilityOverrides returns overrides for a facility.
+func (s *Store) ListFacilityOverrides(ctx context.Context, facilityID uuid.UUID) ([]FacilityOverride, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT id, facility_id, start_date, end_date, open_at, close_at, all_day, reason, applies_weekdays
+	    FROM facility_overrides
+	    WHERE facility_id = $1
+	    ORDER BY start_date ASC
+	`, facilityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FacilityOverride
+	for rows.Next() {
+		over, err := scanOverride(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *over)
+	}
+	return items, rows.Err()
+}
+
+// GetFacilitySchedule merges base hours with overrides for the range.
+func (s *Store) GetFacilitySchedule(ctx context.Context, facilityID uuid.UUID, fromDate, toDate time.Time) ([]FacilityScheduleDay, error) {
+	if toDate.Before(fromDate) {
+		return nil, errors.New("invalid date range")
+	}
+	facility, err := s.GetFacility(ctx, facilityID)
+	if err != nil {
+		return nil, err
+	}
+	overrides, err := s.fetchOverrides(ctx, facilityID, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+	var days []FacilityScheduleDay
+	for d := truncateDate(fromDate); !d.After(truncateDate(toDate)); d = d.AddDate(0, 0, 1) {
+		day := FacilityScheduleDay{Date: d}
+		override := matchOverride(overrides, d)
+		if override != nil {
+			day.Reason = override.Reason
+			if override.AllDay || override.OpenAt == nil || override.CloseAt == nil {
+				day.Closed = true
+			} else {
+				day.Slots = append(day.Slots, FacilitySlot{
+					OpenAt:  override.OpenAt.Format("15:04"),
+					CloseAt: override.CloseAt.Format("15:04"),
+				})
+			}
+		} else {
+			day.Slots = append(day.Slots, FacilitySlot{
+				OpenAt:  facility.OpenAt.Format("15:04"),
+				CloseAt: facility.CloseAt.Format("15:04"),
+			})
+		}
+		if len(day.Slots) == 0 && !day.Closed {
+			day.Closed = true
+		}
+		days = append(days, day)
+	}
+	return days, nil
+}
+
+func (s *Store) fetchOverrides(ctx context.Context, facilityID uuid.UUID, fromDate, toDate time.Time) ([]FacilityOverride, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT id, facility_id, start_date, end_date, open_at, close_at, all_day, reason, applies_weekdays
+	    FROM facility_overrides
+	    WHERE facility_id = $1 AND start_date <= $3 AND end_date >= $2
+	    ORDER BY start_date ASC
+	`, facilityID, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var overrides []FacilityOverride
+	for rows.Next() {
+		over, err := scanOverride(rows)
+		if err != nil {
+			return nil, err
+		}
+		overrides = append(overrides, *over)
+	}
+	return overrides, rows.Err()
+}
+
+func scanOverride(row interface{ Scan(dest ...any) error }) (*FacilityOverride, error) {
+	var o FacilityOverride
+	var openAt, closeAt sql.NullTime
+	var weekdays []int32
+	if err := row.Scan(&o.ID, &o.FacilityID, &o.StartDate, &o.EndDate, &openAt, &closeAt, &o.AllDay, &o.Reason, &weekdays); err != nil {
+		return nil, err
+	}
+	if openAt.Valid {
+		val := openAt.Time
+		o.OpenAt = &val
+	}
+	if closeAt.Valid {
+		val := closeAt.Time
+		o.CloseAt = &val
+	}
+	for _, w := range weekdays {
+		o.AppliesWeekday = append(o.AppliesWeekday, int(w))
+	}
+	return &o, nil
+}
+
+func matchOverride(overrides []FacilityOverride, day time.Time) *FacilityOverride {
+	weekday := int(day.Weekday())
+	for _, override := range overrides {
+		if day.Before(truncateDate(override.StartDate)) || day.After(truncateDate(override.EndDate)) {
+			continue
+		}
+		if len(override.AppliesWeekday) > 0 && !containsInt(override.AppliesWeekday, weekday) {
+			continue
+		}
+		o := override
+		return &o
+	}
+	return nil
+}
+
+func truncateDate(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func containsInt(values []int, target int) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
+func nullableTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t
+}
+
+func intSliceToArray(values []int) interface{} {
+	if len(values) == 0 {
+		return []int{0, 1, 2, 3, 4, 5, 6}
+	}
+	return values
 }
 
 // SchedulePaymentRetry inserts/updates a pending retry.

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(curl:*)",
+      "Bash(name=\"Gateway\" url=\"http://localhost:8080\" echo \"Testing: $name at $url\" if curl -s \"$url/healthz\")",
+      "Bash(then echo '✓ $name is healthy' else echo '✗ $name is not healthy' fi)",
+      "Bash(./scripts/test-api.sh:*)",
+      "Bash(bash -c 'url=\"\"http://localhost:8080\"\"; curl -s \"\"$url/healthz\"\" | jq -e \"\".status == \\\"\"ok\\\"\"\"\"')",
+      "Bash(docker-compose restart:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(bash:*)",
+      "Bash(tee:*)",
+      "Bash(cat:*)",
+      "Bash(flutter --version:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

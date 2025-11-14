@@ -85,13 +85,42 @@ curl -s -X POST http://localhost:8080/graphql \
 - Same via GraphQL:  
   `mutation { updateFacilityAvailability(id:"...", available:false) { id available } }`
 
+### Facility schedule & overrides
+
+- REST (booking-service):
+  - `GET /v1/facilities/:id/schedule?from=2026-01-01&to=2026-01-07`
+  - `POST /v1/facilities/:id/overrides`
+  - `DELETE /v1/facilities/:id/overrides/:overrideId`
+- GraphQL (gateway):
+  ```graphql
+  {
+    facilitySchedule(facilityId:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", from:"2026-01-01", to:"2026-01-07") {
+      date
+      closed
+      slots { openAt closeAt }
+    }
+  }
+  mutation {
+    createFacilityOverride(input:{
+      facilityId:"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      startDate:"2026-01-05",
+      endDate:"2026-01-05",
+      allDay:false,
+      openAt:"12:00",
+      closeAt:"18:00",
+      appliesWeekdays:[1,2,3]
+    }) { id facilityId startDate endDate openAt closeAt }
+  }
+  ```
+  Only `ADMIN`/`VENUE_ADMIN` callers can mutate overrides; `MEMBER`/`OPERATOR` have read-only access.
+
 ### Integration Tests (CI-ready)
 
 ```bash
 ./scripts/test-e2e.sh
 ```
 
-The script brings up the full docker-compose stack, waits for health, and runs the `test/e2e` Go tests (tag `e2e`) that perform auth → booking creation → GraphQL verification. Use this in CI to guard the happy path end-to-end.
+The script sources `.env`, brings up the full docker-compose stack from `codes/`, waits for health, and runs the `test/e2e` Go tests (tag `e2e`). The suite now drives auth → booking → admin override (GraphQL) end-to-end, which protects the new schedule/override plumbing before merging.
 
 ## Default Credentials
 

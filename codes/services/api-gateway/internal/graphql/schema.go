@@ -12,10 +12,14 @@ import (
 )
 
 type schemaBuilder struct {
-	clients  *services.ServiceClients
-	user     *graphql.Object
-	facility *graphql.Object
-	booking  *graphql.Object
+	clients       *services.ServiceClients
+	user          *graphql.Object
+	facility      *graphql.Object
+	booking       *graphql.Object
+	override      *graphql.Object
+	slot          *graphql.Object
+	schedule      *graphql.Object
+	overrideInput *graphql.InputObject
 }
 
 func buildSchema(clients *services.ServiceClients) (graphql.Schema, error) {
@@ -37,10 +41,10 @@ func (b *schemaBuilder) queryType() *graphql.Object {
 			"facilities": {
 				Type: graphql.NewList(b.facilityType()),
 				Args: graphql.FieldConfigArgument{
-					"venueId":  &graphql.ArgumentConfig{Type: graphql.ID},
+					"venueId":   &graphql.ArgumentConfig{Type: graphql.ID},
 					"available": &graphql.ArgumentConfig{Type: graphql.Boolean},
-					"limit":    &graphql.ArgumentConfig{Type: graphql.Int},
-					"offset":   &graphql.ArgumentConfig{Type: graphql.Int},
+					"limit":     &graphql.ArgumentConfig{Type: graphql.Int},
+					"offset":    &graphql.ArgumentConfig{Type: graphql.Int},
 				},
 				Resolve: b.resolveFacilities,
 			},
@@ -59,6 +63,15 @@ func (b *schemaBuilder) queryType() *graphql.Object {
 					"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
 				},
 				Resolve: b.resolveBooking,
+			},
+			"facilitySchedule": {
+				Type: graphql.NewList(b.scheduleDayType()),
+				Args: graphql.FieldConfigArgument{
+					"facilityId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
+					"from":       &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"to":         &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+				},
+				Resolve: b.resolveFacilitySchedule,
 			},
 		},
 	})
@@ -91,6 +104,21 @@ func (b *schemaBuilder) mutationType() *graphql.Object {
 					"available": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.Boolean)},
 				},
 				Resolve: b.resolveUpdateFacilityAvailability,
+			},
+			"createFacilityOverride": {
+				Type: b.facilityOverrideType(),
+				Args: graphql.FieldConfigArgument{
+					"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(b.facilityOverrideInput())},
+				},
+				Resolve: b.resolveCreateFacilityOverride,
+			},
+			"removeFacilityOverride": {
+				Type: graphql.Boolean,
+				Args: graphql.FieldConfigArgument{
+					"facilityId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
+					"id":         &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.ID)},
+				},
+				Resolve: b.resolveRemoveFacilityOverride,
 			},
 		},
 	})
@@ -183,12 +211,71 @@ func (b *schemaBuilder) resolveCancelBooking(p graphql.ResolveParams) (any, erro
 }
 
 func (b *schemaBuilder) resolveUpdateFacilityAvailability(p graphql.ResolveParams) (any, error) {
+	if err := ensureRoles(p, adminRoles...); err != nil {
+		return nil, err
+	}
 	id, _ := p.Args["id"].(string)
 	available, _ := p.Args["available"].(bool)
 	if id == "" {
 		return nil, errors.New("facility id is required")
 	}
 	return b.clients.Bookings.UpdateFacilityAvailability(p.Context, id, available)
+}
+
+func (b *schemaBuilder) resolveFacilitySchedule(p graphql.ResolveParams) (any, error) {
+	facilityID, _ := p.Args["facilityId"].(string)
+	fromStr, _ := p.Args["from"].(string)
+	toStr, _ := p.Args["to"].(string)
+	if facilityID == "" || fromStr == "" || toStr == "" {
+		return nil, errors.New("facilityId, from, and to are required")
+	}
+	fromDate, err := time.Parse(dateOnlyFormat, fromStr)
+	if err != nil {
+		return nil, err
+	}
+	toDate, err := time.Parse(dateOnlyFormat, toStr)
+	if err != nil {
+		return nil, err
+	}
+	if toDate.Before(fromDate) {
+		return nil, errors.New("to must be on or after from")
+	}
+	days, err := b.clients.Bookings.GetFacilitySchedule(p.Context, facilityID, fromDate, toDate)
+	if err != nil {
+		return nil, err
+	}
+	return days, nil
+}
+
+func (b *schemaBuilder) resolveCreateFacilityOverride(p graphql.ResolveParams) (any, error) {
+	if err := ensureRoles(p, adminRoles...); err != nil {
+		return nil, err
+	}
+	inputRaw, _ := p.Args["input"].(map[string]any)
+	parsed, err := parseOverrideInput(inputRaw)
+	if err != nil {
+		return nil, err
+	}
+	override, err := b.clients.Bookings.CreateFacilityOverride(p.Context, parsed)
+	if err != nil {
+		return nil, err
+	}
+	return override, nil
+}
+
+func (b *schemaBuilder) resolveRemoveFacilityOverride(p graphql.ResolveParams) (any, error) {
+	if err := ensureRoles(p, adminRoles...); err != nil {
+		return nil, err
+	}
+	facilityID, _ := p.Args["facilityId"].(string)
+	id, _ := p.Args["id"].(string)
+	if facilityID == "" || id == "" {
+		return nil, errors.New("facilityId and id required")
+	}
+	if err := b.clients.Bookings.DeleteFacilityOverride(p.Context, facilityID, id); err != nil {
+		return nil, err
+	}
+	return true, nil
 }
 
 func (b *schemaBuilder) userType() *graphql.Object {
@@ -238,10 +325,10 @@ func (b *schemaBuilder) facilityType() *graphql.Object {
 					return nil, nil
 				},
 			},
-			"available":         {Type: graphql.Boolean},
+			"available":        {Type: graphql.Boolean},
 			"weekdayRateCents": {Type: graphql.Int},
 			"weekendRateCents": {Type: graphql.Int},
-			"currency":        {Type: graphql.String},
+			"currency":         {Type: graphql.String},
 		},
 	})
 	return b.facility
@@ -281,6 +368,141 @@ func (b *schemaBuilder) bookingType() *graphql.Object {
 		},
 	})
 	return b.booking
+}
+
+func (b *schemaBuilder) facilityOverrideType() *graphql.Object {
+	if b.override != nil {
+		return b.override
+	}
+	b.override = graphql.NewObject(graphql.ObjectConfig{
+		Name: "FacilityOverride",
+		Fields: graphql.Fields{
+			"id":         {Type: graphql.NewNonNull(graphql.ID)},
+			"facilityId": {Type: graphql.NewNonNull(graphql.ID)},
+			"startDate": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if override, ok := overrideFromSource(p.Source); ok {
+						return override.StartDate.Format(dateOnlyFormat), nil
+					}
+					return nil, nil
+				},
+			},
+			"endDate": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if override, ok := overrideFromSource(p.Source); ok {
+						return override.EndDate.Format(dateOnlyFormat), nil
+					}
+					return nil, nil
+				},
+			},
+			"allDay": {Type: graphql.Boolean},
+			"openAt": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if override, ok := overrideFromSource(p.Source); ok {
+						return formatOptionalTime(override.OpenAt), nil
+					}
+					return nil, nil
+				},
+			},
+			"closeAt": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if override, ok := overrideFromSource(p.Source); ok {
+						return formatOptionalTime(override.CloseAt), nil
+					}
+					return nil, nil
+				},
+			},
+			"reason":          {Type: graphql.String},
+			"appliesWeekdays": {Type: graphql.NewList(graphql.Int)},
+		},
+	})
+	return b.override
+}
+
+func (b *schemaBuilder) slotType() *graphql.Object {
+	if b.slot != nil {
+		return b.slot
+	}
+	b.slot = graphql.NewObject(graphql.ObjectConfig{
+		Name: "FacilitySlot",
+		Fields: graphql.Fields{
+			"openAt": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if slot, ok := slotFromSource(p.Source); ok {
+						return slot.OpenAt, nil
+					}
+					return nil, nil
+				},
+			},
+			"closeAt": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if slot, ok := slotFromSource(p.Source); ok {
+						return slot.CloseAt, nil
+					}
+					return nil, nil
+				},
+			},
+		},
+	})
+	return b.slot
+}
+
+func (b *schemaBuilder) scheduleDayType() *graphql.Object {
+	if b.schedule != nil {
+		return b.schedule
+	}
+	b.schedule = graphql.NewObject(graphql.ObjectConfig{
+		Name: "FacilityScheduleDay",
+		Fields: graphql.Fields{
+			"date": {
+				Type: graphql.String,
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if day, ok := scheduleDayFromSource(p.Source); ok {
+						return day.Date.Format(dateOnlyFormat), nil
+					}
+					return nil, nil
+				},
+			},
+			"closed": {Type: graphql.Boolean},
+			"reason": {Type: graphql.String},
+			"slots": {
+				Type: graphql.NewList(b.slotType()),
+				Resolve: func(p graphql.ResolveParams) (any, error) {
+					if day, ok := scheduleDayFromSource(p.Source); ok {
+						return day.Slots, nil
+					}
+					return nil, nil
+				},
+			},
+		},
+	})
+	return b.schedule
+}
+
+func (b *schemaBuilder) facilityOverrideInput() *graphql.InputObject {
+	if b.overrideInput != nil {
+		return b.overrideInput
+	}
+	b.overrideInput = graphql.NewInputObject(graphql.InputObjectConfig{
+		Name: "FacilityOverrideInput",
+		Fields: graphql.InputObjectConfigFieldMap{
+			"facilityId":      {Type: graphql.NewNonNull(graphql.ID)},
+			"startDate":       {Type: graphql.NewNonNull(graphql.String)},
+			"endDate":         {Type: graphql.NewNonNull(graphql.String)},
+			"allDay":          {Type: graphql.Boolean},
+			"openAt":          {Type: graphql.String},
+			"closeAt":         {Type: graphql.String},
+			"reason":          {Type: graphql.String},
+			"appliesWeekdays": {Type: graphql.NewList(graphql.Int)},
+		},
+	})
+	return b.overrideInput
 }
 
 func formatTimeField(extractor func(*services.Booking) time.Time) graphql.FieldResolveFn {
@@ -360,7 +582,188 @@ func boolFromArg(value interface{}) (bool, error) {
 		return false, fmt.Errorf("invalid boolean type")
 	}
 }
+func ensureRoles(p graphql.ResolveParams, allowed ...string) error {
+	claims := ClaimsFromContext(p.Context)
+	if claims == nil {
+		return errors.New("unauthorized")
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	if !hasAnyRole(claims.Roles, allowed...) {
+		return errors.New("forbidden")
+	}
+	return nil
+}
+
+func hasAnyRole(have []string, allowed ...string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, role := range have {
+		for _, target := range allowed {
+			if strings.EqualFold(strings.TrimSpace(role), strings.TrimSpace(target)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func overrideFromSource(source any) (*services.FacilityOverride, bool) {
+	switch v := source.(type) {
+	case *services.FacilityOverride:
+		return v, true
+	case services.FacilityOverride:
+		o := v
+		return &o, true
+	default:
+		return nil, false
+	}
+}
+
+func scheduleDayFromSource(source any) (*services.FacilityScheduleDay, bool) {
+	switch v := source.(type) {
+	case *services.FacilityScheduleDay:
+		return v, true
+	case services.FacilityScheduleDay:
+		day := v
+		return &day, true
+	default:
+		return nil, false
+	}
+}
+
+func slotFromSource(source any) (*services.FacilitySlot, bool) {
+	switch v := source.(type) {
+	case *services.FacilitySlot:
+		return v, true
+	case services.FacilitySlot:
+		slot := v
+		return &slot, true
+	default:
+		return nil, false
+	}
+}
+
+func formatOptionalTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.Format(timeOnlyFormat)
+}
+
+func parseOverrideInput(raw map[string]any) (services.FacilityOverrideInput, error) {
+	var input services.FacilityOverrideInput
+	if raw == nil {
+		return input, errors.New("input is required")
+	}
+	facilityID, _ := raw["facilityId"].(string)
+	if facilityID == "" {
+		return input, errors.New("facilityId is required")
+	}
+	startStr, _ := raw["startDate"].(string)
+	endStr, _ := raw["endDate"].(string)
+	if startStr == "" || endStr == "" {
+		return input, errors.New("startDate and endDate are required")
+	}
+	startDate, err := time.Parse(dateOnlyFormat, startStr)
+	if err != nil {
+		return input, fmt.Errorf("invalid startDate: %w", err)
+	}
+	endDate, err := time.Parse(dateOnlyFormat, endStr)
+	if err != nil {
+		return input, fmt.Errorf("invalid endDate: %w", err)
+	}
+	if endDate.Before(startDate) {
+		return input, errors.New("endDate must be on or after startDate")
+	}
+	allDay, _ := raw["allDay"].(bool)
+	var openPtr, closePtr *time.Time
+	if !allDay {
+		openStr, _ := raw["openAt"].(string)
+		closeStr, _ := raw["closeAt"].(string)
+		if openStr == "" || closeStr == "" {
+			return input, errors.New("openAt and closeAt required unless allDay is true")
+		}
+		openAt, err := time.Parse(timeOnlyFormat, openStr)
+		if err != nil {
+			return input, fmt.Errorf("invalid openAt: %w", err)
+		}
+		closeAt, err := time.Parse(timeOnlyFormat, closeStr)
+		if err != nil {
+			return input, fmt.Errorf("invalid closeAt: %w", err)
+		}
+		openPtr = &openAt
+		closePtr = &closeAt
+	}
+	weekdays, err := parseWeekdays(raw["appliesWeekdays"])
+	if err != nil {
+		return input, err
+	}
+	if len(weekdays) == 0 {
+		weekdays = append([]int(nil), allWeekdays...)
+	}
+
+	input = services.FacilityOverrideInput{
+		FacilityID: facilityID,
+		StartDate:  startDate,
+		EndDate:    endDate,
+		AllDay:     allDay,
+		OpenAt:     openPtr,
+		CloseAt:    closePtr,
+		Reason:     stringValue(raw["reason"]),
+		Weekdays:   weekdays,
+	}
+	return input, nil
+}
+
+func parseWeekdays(value any) ([]int, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var rawList []interface{}
+	switch v := value.(type) {
+	case []interface{}:
+		rawList = v
+	case []int:
+		out := make([]int, len(v))
+		copy(out, v)
+		return out, nil
+	default:
+		return nil, fmt.Errorf("appliesWeekdays must be a list of integers")
+	}
+	result := make([]int, 0, len(rawList))
+	for _, item := range rawList {
+		val, err := intFromArg(item)
+		if err != nil {
+			return nil, fmt.Errorf("appliesWeekdays must contain integers")
+		}
+		if val < 0 || val > 6 {
+			return nil, fmt.Errorf("weekday out of range: %d", val)
+		}
+		result = append(result, val)
+	}
+	return result, nil
+}
+
+func stringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	if str, ok := value.(string); ok {
+		return str
+	}
+	return fmt.Sprint(value)
+}
+
+var adminRoles = []string{"ADMIN", "VENUE_ADMIN"}
+
+var allWeekdays = []int{0, 1, 2, 3, 4, 5, 6}
+
 const (
 	defaultPageSize = 20
 	maxPageSize     = 100
+	dateOnlyFormat  = "2006-01-02"
+	timeOnlyFormat  = "15:04"
 )

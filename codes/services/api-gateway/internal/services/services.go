@@ -25,6 +25,9 @@ type BookingService interface {
 	CancelBooking(ctx context.Context, bookingID string) (*Booking, error)
 	GetBooking(ctx context.Context, bookingID string) (*Booking, error)
 	UpdateFacilityAvailability(ctx context.Context, facilityID string, available bool) (*Facility, error)
+	CreateFacilityOverride(ctx context.Context, input FacilityOverrideInput) (*FacilityOverride, error)
+	DeleteFacilityOverride(ctx context.Context, facilityID, overrideID string) error
+	GetFacilitySchedule(ctx context.Context, facilityID string, from, to time.Time) ([]*FacilityScheduleDay, error)
 }
 
 // User mirrors a subset of the user-service DTO.
@@ -51,6 +54,30 @@ type Facility struct {
 	Currency    string
 }
 
+type FacilityOverride struct {
+	ID             string
+	FacilityID     string
+	StartDate      time.Time
+	EndDate        time.Time
+	AllDay         bool
+	OpenAt         *time.Time
+	CloseAt        *time.Time
+	Reason         string
+	Weekdays       []int
+}
+
+type FacilityScheduleDay struct {
+	Date   time.Time
+	Closed bool
+	Reason string
+	Slots  []FacilitySlot
+}
+
+type FacilitySlot struct {
+	OpenAt  string
+	CloseAt string
+}
+
 // Booking describes a single reservation.
 type Booking struct {
 	ID            string
@@ -71,6 +98,17 @@ type BookingInput struct {
 	UserID     string
 	StartsAt   time.Time
 	EndsAt     time.Time
+}
+
+type FacilityOverrideInput struct {
+	FacilityID string
+	StartDate  time.Time
+	EndDate    time.Time
+	AllDay     bool
+	OpenAt     *time.Time
+	CloseAt    *time.Time
+	Reason     string
+	Weekdays   []int
 }
 
 // FacilityQuery carries pagination/filter filters.
@@ -213,6 +251,42 @@ func (m *mockBookingService) CancelBooking(_ context.Context, bookingID string) 
 			Available: true,
 		},
 	}, nil
+}
+
+func (m *mockBookingService) CreateFacilityOverride(_ context.Context, input FacilityOverrideInput) (*FacilityOverride, error) {
+	if input.FacilityID == "" {
+		return nil, errors.New("facility id required")
+	}
+	return &FacilityOverride{
+		ID:         "override-1",
+		FacilityID: input.FacilityID,
+		StartDate:  input.StartDate,
+		EndDate:    input.EndDate,
+		AllDay:     input.AllDay,
+		OpenAt:     input.OpenAt,
+		CloseAt:    input.CloseAt,
+		Reason:     input.Reason,
+		Weekdays:   input.Weekdays,
+	}, nil
+}
+
+
+func (m *mockBookingService) DeleteFacilityOverride(_ context.Context, facilityID, overrideID string) error {
+	if facilityID == "" || overrideID == "" {
+		return errors.New("ids required")
+	}
+	return nil
+}
+
+func (m *mockBookingService) GetFacilitySchedule(_ context.Context, facilityID string, from, to time.Time) ([]*FacilityScheduleDay, error) {
+	if facilityID == "" {
+		return nil, errors.New("facility id required")
+	}
+	day := &FacilityScheduleDay{
+		Date:  from,
+		Slots: []FacilitySlot{{OpenAt: "06:00", CloseAt: "22:00"}},
+	}
+	return []*FacilityScheduleDay{day}, nil
 }
 
 func (m *mockBookingService) GetBooking(ctx context.Context, bookingID string) (*Booking, error) {
